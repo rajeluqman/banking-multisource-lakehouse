@@ -1,0 +1,26 @@
+# Credentials
+.env
+.env.dev
+.env.staging
+.env.prod
+*.env
+credentials/
+.kaggle/
+
+# Data (local-disk S3 fallback + real Kaggle downloads — never committed)
+data/
+*.parquet
+*.csv
+!seed/fixtures/**/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Docker
+docker-compose.override.yml
+
+# OS/editor
+.DS_Store

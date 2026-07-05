@@ -1,0 +1,32 @@
+name: CI (governance gates)
+
+# $0 static gates only — no cloud, no secrets. Adjust `paths` and the dbt-specific steps to
+# match this project's actual stack; the three gate scripts below are stack-agnostic.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal deps
+        run: pip install pyyaml
+      - name: Journey completeness gate
+        run: python gates/journey_completeness.py
+      - name: Boundary contract gate
+        run: python gates/boundary_contract.py
+      - name: Doc-reference contract gate
+        run: python gates/doc_reference_contract.py
+      - name: Secrets scan gate
+        run: python gates/secrets_scan.py
+      # - name: Identity/lineage gate (if this project has one)
+      #   run: python gates/identity_contract.py
+      # - name: dbt parse (if this project uses dbt)
+      #   run: cd <dbt_project_dir> && dbt deps && dbt parse

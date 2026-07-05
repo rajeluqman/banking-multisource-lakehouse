@@ -1,0 +1,117 @@
+# framework.yml — the ONE config every gate script in gates/ reads.
+# Do not edit the .py scripts to hardcode project values — if a script can't get what it needs
+# from here, add the key here instead. See 00_START_HERE.md "Design rule that makes this portable."
+
+project:
+  name: "banking-multisource-lakehouse"
+
+paths:
+  # Directories that legitimately exist at repo root — doc_reference_contract checks path
+  # references in docs resolve to one of these.
+  path_roots:
+    - "journey/"
+    - "governance/"
+    - "tests/"
+    - ".claude/"
+    - "scripts/"
+    - "gates/"
+    - "seed/"
+    - "pipeline/"
+    - "sap_drop/"
+    - "docs/"
+
+  # Where transform models live, for model-name drift checks. No dbt here (D-01 Add #3 —
+  # Databricks portable PySpark + Delta is the transform engine, not dbt); "models" = the
+  # Silver/Gold PySpark table-builder scripts, one file per table/mart.
+  dbt_root: "pipeline"
+  model_globs:
+    - "pipeline/silver/**/*.py"
+    - "pipeline/gold/**/*.py"
+  snapshot_globs: []
+
+journey:
+  # Every doc here must exist and be non-template (see journey_completeness.py logic).
+  required_docs:
+    - "journey/01_DATASET_AND_SOURCES.md"
+    - "journey/02_BUSINESS_QUESTIONS.md"
+    - "journey/03_DATA_REQUIREMENTS.md"
+    - "journey/04_DATA_MODEL.md"
+    - "journey/05_STTM.md"
+    - "journey/06_DQ_PLAN.md"
+    - "journey/07_PIPELINE_SPEC.md"
+    - "journey/08_SERVING_AND_EVIDENCE.md"
+    - "journey/09_SECURITY_AND_ACCESS.md"
+
+secrets_scan:
+  # Extra regexes beyond the built-ins (literal password/api_key/secret/token assignment, AWS
+  # AKIA keys, private-key headers, connection strings with embedded passwords).
+  extra_patterns:
+    - "dapi[0-9a-f]{32}"                              # Databricks personal access token shape
+    - "(?i)DirectLogin\\s+username=.*password="        # OBP DirectLogin auth header (embeds password)
+    - "(?i)obp[_-]?(client[_-]?secret|api[_-]?key)\\s*[:=]\\s*[\"'][^\"']{8,}[\"']"  # OBP OAuth secret
+
+  # Whole files skipped entirely (path or glob, matched relative to repo root). Use for
+  # legitimately-example-only files; prefer the inline 'secrets-scan:allow' line marker for a
+  # single line inside an otherwise-real file.
+  allowlist_paths:
+    - ".env.example"
+
+boundary:
+  # Python import prefixes banned project-wide, with the reason shown on failure.
+  # Match is whole-dotted-segment (e.g. "pyspark" matches "pyspark.sql", not "pysparkling").
+  banned_imports:
+    "dlt": "D-01 Addendum #3 — Delta Live Tables is Databricks-notebook lock-in; portable PySpark only, so the repo survives after the disposable trial workspace is deleted"
+    "kafka": "D-02 — batch-first ruling; CDC/streaming is a later fasa, not v1"
+    "confluent_kafka": "D-02 — batch-first ruling; CDC/streaming is a later fasa, not v1"
+    "sklearn": "OPUS_DECISIONS REJECTED — this is a data-engineering portfolio repo, not ML training (isFraud is a label to serve, not predict)"
+    "xgboost": "OPUS_DECISIONS REJECTED — no ML model training in this repo"
+    "tensorflow": "OPUS_DECISIONS REJECTED — no ML model training in this repo"
+    "torch": "OPUS_DECISIONS REJECTED — no ML model training in this repo"
+    "langchain": "OPUS_DECISIONS REJECTED — vector DB / RAG / semantic anything is the wrong project"
+    "chromadb": "OPUS_DECISIONS REJECTED — no vector DB in this repo"
+    "pinecone": "OPUS_DECISIONS REJECTED — no vector DB in this repo"
+
+  # Globs where an otherwise-banned import IS sanctioned. None — every ban above is a hard,
+  # repo-wide rejection (see 01_OPUS_DECISIONS.md REJECTED list); nothing carves out an exception.
+  sanctioned_overrides: {}
+
+  # No dbt (or equivalent) profile file in this repo — Databricks connection config lives in
+  # env vars / Databricks secret scopes (journey/09), not a profiles.yml.
+  profile_files: []
+  locked_adapter: ""
+
+  # Free-text ingestion allowlist, informational (not regex-enforced — ingestion mechanism
+  # rarely has a clean import signature). Cite in governance/BOUNDARY_CONTRACT.md too.
+  ingestion_allowlist:
+    - "psycopg2 / sqlalchemy watermark extractor (PostgreSQL 'Sales / Loan Dept')"
+    - "pyodbc / sqlalchemy watermark extractor (MS SQL Server 'Credit Card + Fraud')"
+    - "manual/simulated SFTP file-drop pickup (SAP-sim CRM folder)"
+    - "Open Bank Project sandbox REST API client (OAuth/DirectLogin, paginated)"
+    - "BNM OpenAPI (optional live FX enrich, never a build dependency — D-12)"
+
+identity:
+  grain_description: "bank-wide customer_id (dim_customer_xwalk, D-04) is the cross-source MDM identity; every Gold-layer customer-scoped row resolves to exactly one customer_id. Per-source native keys feed the crosswalk: SK_ID_CURR (Postgres/home-credit), nameOrig/nameDest (MSSQL/paysim), client_id+account_id (SAP-sim/Berka), OBP account_id (Open Bank Project)."
+  key_columns:
+    - "customer_id"
+    - "SK_ID_CURR"
+    - "nameOrig"
+    - "client_id"
+    - "account_id"
+
+governed_paths:
+  # Files/dirs that trigger a pre-edit reminder + post-edit gate run via the governance_guard hook.
+  - match: "pipeline/gold/"
+    cite: "journey/04_DATA_MODEL.md + Clean-ERD doctrine (governance/ADR/architect veto)"
+    gates: ["boundary_contract.py", "doc_reference_contract.py"]
+  - match: "pipeline/silver/"
+    cite: "journey/09_SECURITY_AND_ACCESS.md (D-07/D-16 PII masking) + journey/06_DQ_PLAN.md"
+    gates: ["boundary_contract.py", "secrets_scan.py"]
+  - match: "seed/build_xwalk.py"
+    cite: "01_OPUS_DECISIONS.md D-04 (customer crosswalk keystone) + journey/04_DATA_MODEL.md"
+    gates: ["boundary_contract.py"]
+  - match: "docker-compose.yml"
+    cite: "01_OPUS_DECISIONS.md D-01 Addendum #3 (ratified stack) + governance/BOUNDARY_CONTRACT.md"
+    gates: ["secrets_scan.py"]
+  - match: "gates/framework.yml"
+    cite: "00_START_HERE.md — the one config every gate reads; changing it changes what every gate enforces"
+    gates: ["journey_completeness.py", "boundary_contract.py", "secrets_scan.py"]

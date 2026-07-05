@@ -1,0 +1,44 @@
+# 06 — Data Quality Plan (DQD)
+
+> Every row below is a `03_DATASET_RISKS_AND_RESOLUTIONS.md` risk tagged **DQ-gate** in the
+> planning lab — this doc is the executable translation of that register into layer/check/tool/
+> fail-action form. R-ids are cited so `BUILD_REPORT.md`'s final self-audit can trace each one.
+
+## Gates per layer
+| Layer | Check | Tool | Fail action |
+|---|---|---|---|
+| Landing→Bronze | `_SUCCESS` marker + manifest/checksum match (R-15, R-16) | pipeline/promote/promotion_gate.py (custom, transport-integrity only) | Block promotion — quarantine in Landing, Bronze untouched, alert |
+| Landing→Bronze | Pagination reconciled vs API-reported totals (R-22) | pipeline/promote/promotion_gate.py | Block promotion — quarantine |
+| Landing→Bronze | Dedup redelivered/re-dropped files (R-15) | pipeline/promote/promotion_gate.py (checksum-keyed manifest) | Skip duplicate, log, continue |
+| Landing→Bronze | Multi-file set completeness (Berka's 8 tables / SAP header+detail) | pipeline/promote/promotion_gate.py | Block promotion until full set present |
+| Landing→Bronze | Schema-drift detection (R-16, R-28) | pipeline/promote/promotion_gate.py (schema hash compare) | Block promotion + alert; controlled `mergeSchema` only after explicit review, never silent |
+| Bronze→Silver | FK-integrity — orphan `bureau`/`previous_application`/`bureau_balance` rows (R-03) | custom PySpark DQ check | Route to quarantine table; count + report, never silently drop |
+| Bronze→Silver | Null-rate expectations per column (R-04) | custom PySpark DQ check (per-column threshold) | WARN below threshold; BLOCK above a hard ceiling (defined per column at implementation time) |
+| Bronze→Silver | `birth_number` decode correctness (R-12) | unit test (tests/test_birth_number_decode.py) with known fixtures | Block Silver build on unit-test failure |
+| Bronze→Silver | Merchant-row balance-null exception (R-09) | custom PySpark DQ check, scoped to entity_type=merchant | Excluded from the general null-rate check, not a failure |
+| Bronze→Silver | Balance reconciliation (`oldbalance`/`newbalance` vs `amount`) (R-11) | custom PySpark DQ check | **WARN only** — documented known PaySim simulator quirk, data not silently "fixed" |
+| Bronze→Silver | Encoding/diacritics check on Berka name/district fields (R-17) | custom PySpark DQ check (UTF-8 validity) | WARN + log; force UTF-8 re-encode at seed if source encoding is wrong |
+| Bronze→Silver | `isFraud` vs `isFlaggedFraud` used correctly (R-08) | code review / STTM adherence check (not automatable at data level — asserted at Gold KPI definition) | Any Gold model reading `isFlaggedFraud` as the fraud KPI is a Clean-ERD Doctrine violation (architect veto) |
+| Silver→Gold | Currency normalization completeness — every monetary column has a currency code before FX conversion (R-14) | custom PySpark DQ check | Block Gold build if any monetary column lacks a currency tag |
+| Silver→Gold | Late-arriving dimension unknown-member handling (R-29) | custom PySpark DQ check (count of `-1` customer_id rows, re-link job coverage) | WARN if unknown-member count grows run-over-run without re-linking |
+| Any→Gold | Per-run source→Bronze→Silver→Gold row-count reconciliation (R-30) | pipeline/gold/mart_pipeline_health.py | Surfaced as the BQ-10 mart itself, not a separate hidden report |
+
+## LLM/ML-output-specific gates
+N/A — 2026-07-05, reason: this pipeline is fully deterministic ETL/ELT (PySpark transforms over
+seeded/extracted relational and REST data). No LLM extraction or ML scoring step exists anywhere
+in the locked scope (journey/02 "Explicitly out of scope" #4 — no model training). `isFraud`/
+`TARGET` are pass-through labels from the source data, not model output.
+
+## PII / sensitive-field handling
+Mask order: raw PII lands verbatim in Landing→Bronze (D-05/D-15, access-restricted — R-27) →
+decoded/masked exactly once at the Bronze→Silver gate (D-07) → Gold and serving see only the
+masked/decoded form, never re-exposed. Governing ADR: `governance/ADR/ADR-005-star-schema-gold-
+and-mdm-xwalk.md` for the identity model this masking sits on top of; full classification +
+handling table in `journey/09_SECURITY_AND_ACCESS.md` §2 (D-16).
+
+## Known accepted quality gaps
+| Gap | Accepted reason | Date |
+|---|---|---|
+| PaySim `oldbalance`/`newbalance` don't always reconcile with `amount` (R-11) | Known, documented PaySim simulator artifact — not a pipeline defect; fixing it would fabricate data the source never had | 2026-07-05 |
+| Hard deletes invisible to Fasa B watermark batch (R-25, ADR-004) | Named limitation of batch-first ingestion; closed by the Fasa C CDC upgrade, not a v1 defect | 2026-07-05 |
+| BQ-03 (fraud→CRM follow-up SLA) has no real ticketing source among the 4 systems (journey/03) | Documented gap — resolved via a stated proxy or marked partially-simulated at Fasa D build time, never silently invented | 2026-07-05 |
