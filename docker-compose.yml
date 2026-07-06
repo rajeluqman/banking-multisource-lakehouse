@@ -1,0 +1,43 @@
+
+# Sources only (D-01 Addendum #3, ADR-002, ADR-006). Postgres + MS SQL Server are the two
+# self-hosted RDBMS sources; SAP HANA Cloud and Teradata are owner-provisioned cloud instances
+# (ADR-006) and are NOT run here. No literal secrets — every value comes from .env
+# (gates/framework.yml -> governed_paths matches this file; see journey/09_SECURITY_AND_ACCESS.md).
+services:
+  postgres:
+    image: postgres:16
+    container_name: banking_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-banking_sales}
+      POSTGRES_USER: ${POSTGRES_USER:-banking_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-banking_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: banking_mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_PASSWORD:?set MSSQL_PASSWORD in .env}
+      MSSQL_PID: Developer
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  mssql_data:

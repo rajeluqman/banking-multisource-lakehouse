@@ -17,7 +17,6 @@ paths:
     - "gates/"
     - "seed/"
     - "pipeline/"
-    - "sap_drop/"
     - "docs/"
 
   # Where transform models live, for model-name drift checks. No dbt here (D-01 Add #3 —
