@@ -20,6 +20,11 @@
 | Separate `security/` folder (threat_model.md, incident_response.md, etc. as standalone files) | 2026-07-05 | Considered and rejected twice (kit ADR-001 rej-alt #2, CIL ADR-014); content lives in `journey/09_SECURITY_AND_ACCESS.md` | owner |
 | Type 2 SCD on `dim_customer` | 2026-07-05 | No business need in the locked BQ list; named as deliberately out per the clean-model doctrine | architect (ADR-005) |
 
+## Superseded rejections (owner override — original row kept for audit trail, not deleted)
+| Item | Original date | Original reason | Override date | Override reason | Ruled by |
+|---|---|---|---|---|---|
+| SAP BTP trial / ABAP Docker (real SAP instance) | 2026-07-05 | 90-day trial wall, 16–32GB RAM | 2026-07-06 | Owner's operating model makes trial-wall a non-issue (projects run ~3-4 times, new trial account per future project — same reasoning already accepted for the Databricks trial, ADR-002). Heavy-RAM concern doesn't apply either: this override uses **SAP HANA Cloud (BTP Free Tier)** only — a managed database, not full ABAP/Netweaver. Full design: `governance/ADR/ADR-006-real-sap-hana-teradata-cdc-showcase.md` | owner |
+
 ## Deferred (not now, revisit if X happens)
 | Item | Date | Condition to revisit | Ruled by |
 |---|---|---|---|

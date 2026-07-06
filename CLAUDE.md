@@ -63,6 +63,15 @@ before any code — `@scope-guardian` holds hard veto.
 | Gold/marts | S3 `banking/gold/` (Delta), Unity Catalog governed | Databricks portable PySpark + Delta | ADR-005 star schema |
 | Serving | Snowflake external tables over Gold S3 (or DuckDB $0 fallback) + Power BI | Snowflake / DuckDB | Fasa E, optional |
 
+**Sources (5, ADR-006 owner override 2026-07-06):** Postgres (Docker, Home Credit) + MS SQL
+Server (Docker, PaySim) batch watermark; **SAP HANA Cloud** (BTP Free Tier, Berka — replaces the
+original file-drop simulation) + **Teradata** (UCI Bank Marketing, new) via a portable CDC-poll
+pattern (trigger + `_cdc_log` change-table, NOT SAP SLT/SDI or QueryGrid — see
+`governance/ADR/ADR-006-real-sap-hana-teradata-cdc-showcase.md`); Open Bank Project sandbox (REST
+API). All source-side compute (Docker containers, SAP HANA Cloud/Teradata connections) runs in
+whichever environment actually executes the pipeline — **not the docs/planning session**; this
+main session writes code only, does not download datasets or run containers/connections itself.
+
 Dev loop = local Spark / deterministic sample set (free, fast). Canonical full run = the
 disposable Databricks trial (screenshot evidence, then delete) — D-01 Addendum #3. No DLT / heavy
 `dbutils` / notebook-only magic on the critical path (`gates/boundary_contract.py` bans

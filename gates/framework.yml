@@ -85,7 +85,8 @@ boundary:
   ingestion_allowlist:
     - "psycopg2 / sqlalchemy watermark extractor (PostgreSQL 'Sales / Loan Dept')"
     - "pyodbc / sqlalchemy watermark extractor (MS SQL Server 'Credit Card + Fraud')"
-    - "manual/simulated SFTP file-drop pickup (SAP-sim CRM folder)"
+    - "hdbcli CDC-poll extractor (SAP HANA Cloud 'Internal CRM', ADR-006 — trigger/change-table pattern, not SAP SLT/SDI)"
+    - "Teradata CDC-poll extractor (ADR-006 — same trigger/change-table pattern, not QueryGrid)"
     - "Open Bank Project sandbox REST API client (OAuth/DirectLogin, paginated)"
     - "BNM OpenAPI (optional live FX enrich, never a build dependency — D-12)"
 

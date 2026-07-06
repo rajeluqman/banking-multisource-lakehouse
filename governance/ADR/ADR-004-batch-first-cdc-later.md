@@ -37,4 +37,11 @@ out of scope until the Fasa C CDC upgrade (`op='d'` from the change log).
   this is itself part of the interview story, not just an implementation detail.
 
 ## Addendum log
-None yet.
+- **2026-07-06 (Addendum #1):** "CDC is Fasa C, later" is narrowed, not reversed. Postgres and
+  MS SQL Server stay on the batch watermark extractor described above, unchanged. Two NEW source
+  systems (SAP HANA Cloud, Teradata — added by owner override) use a CDC-style extractor from
+  their first build, as the deliberate connector-learning showcase the owner asked for. This does
+  NOT contradict this ADR's batch-first rationale (CDC-first burns effort on plumbing before
+  transform logic exists) — the transform logic (MDM crosswalk, marts, DQ) is already proven on
+  the original 3 sources' batch path before these 2 CDC extractors are built. Full rationale:
+  `ADR-006-real-sap-hana-teradata-cdc-showcase.md`.

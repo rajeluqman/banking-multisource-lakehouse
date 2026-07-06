@@ -16,6 +16,8 @@ explicitly, not a speculative security *program*.
 | Secret | Used by | Stored in | Never |
 |---|---|---|---|
 | Postgres / MS SQL creds | watermark extractors | Databricks secret scope (canonical run) / `.env` (gitignored, dev loop) | in code or config committed to git |
+| SAP HANA Cloud connection (host/port/instance/creds) | `sap_hana_extract.py`, seed loader (ADR-006) | Databricks secret scope / `.env` (gitignored) | in code, chat, or committed config — owner supplies via `.env` only |
+| Teradata connection (host/creds) | `teradata_extract.py`, seed loader (ADR-006) | Databricks secret scope / `.env` (gitignored) | same as above |
 | OBP OAuth client id/secret + token | OBP API client | Databricks secret scope | in the landing path or logs |
 | S3 access key (transform) | Databricks ↔ S3 | Unity Catalog storage credential / instance profile | as a long-lived key hardcoded in code |
 | S3 read-only key (serving) | Snowflake external tables | Snowflake storage integration | scoped beyond `banking/gold/`, never write |
@@ -35,6 +37,8 @@ shape `dapi[0-9a-f]{32}`, OBP DirectLogin header shape, OBP OAuth secret assignm
 | balances, `amount`, txn value | all sources | **confidential** (financial) | aggregate-only in most Gold marts; row-level access restricted |
 | name, address, district | Berka CRM | **confidential** (PII) | restricted; not exposed in marketing-facing marts (`mart_cross_sell` carries customer_id + segment, not name/address) |
 | `isFraud` label | mssql | **confidential** (risk) | fraud-ops role only |
+| `job`/`marital`/`education` (Teradata Bank Marketing) | landing/bronze/silver `sil_campaign_response` | **confidential** (demographic) | restricted at Gold to risk/marketing-facing marts only (BQ-05/06), not exposed row-level elsewhere |
+| `credit_in_default` (Teradata Bank Marketing) | landing/bronze/silver `sil_campaign_response` | **confidential** (risk) | risk role only, same as `isFraud` — treated as a risk signal, not public |
 | currency codes, product types, dates | all | internal | unrestricted internally |
 
 Every non-public column gets a row — "sensitive" is flagged even where no regulation currently

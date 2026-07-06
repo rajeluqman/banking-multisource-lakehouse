@@ -13,12 +13,12 @@ source system only sees its own slice.
 ## Question → Metric → Definition of Done
 | # | Business question | Metric(s) | Definition of done | Priority |
 |---|---|---|---|---|
-| BQ-01 | Customer 360 — how many products does each customer hold, and total relationship value? | product count by type (deposit/card/loan); total balance + outstanding loan value in reporting currency | `mart_customer_360` exists; one runnable query returns product mix + relationship value per customer | P0 |
+| BQ-01 | Customer 360 — how many products does each customer hold, and total relationship value? | product count by type (deposit/card/loan/term-deposit); total balance + outstanding loan value in reporting currency | `mart_customer_360` exists; one runnable query returns product mix + relationship value per customer | P0 |
 | BQ-02 | Fraud trend — fraud txn count & value this month vs last, by type/channel | fraud txn count, fraud value, MoM delta, breakdown by `transaction_type` | `mart_fraud_daily` exists; query returns current vs prior month comparison | P0 |
 | BQ-03 | Fraud follow-up SLA — % of fraud-hit customers with a CRM ticket within 48h | % within-SLA, count breached | `mart_fraud_followup` exists; query returns SLA % | P1 |
 | BQ-04 | Loan funnel — applications/month, approval rate, time-to-decision | applications count, approval rate, avg days app→decision | `mart_loan_funnel` exists; query returns monthly funnel | P0 |
-| BQ-05 | Default risk by segment — default rate by income band/employment; which ACTIVE customers are high-risk now | default rate by segment, current high-risk customer list | `mart_risk_segment` exists; query returns segment default rates + risk list | P1 |
-| BQ-06 | Cross-sell targets — healthy-deposit, active, no card/loan customers | count + list of qualifying customers | `mart_cross_sell` exists; query returns target list | P1 |
+| BQ-05 | Default risk by segment — default rate by income band/employment; which ACTIVE customers are high-risk now | default rate by segment (job/education-enriched, ADR-006 D6.4), current high-risk customer list, cross-checked against Bank Marketing's independent `default` flag | `mart_risk_segment` exists; query returns segment default rates + risk list | P1 |
+| BQ-06 | Cross-sell targets — healthy-deposit, active, no card/loan customers | count + list of qualifying customers, ranked by prior campaign responsiveness (`poutcome`/`y`, ADR-006 D6.4) | `mart_cross_sell` exists; query returns target list | P1 |
 | BQ-07 | Dormancy — customers with no txn in X days this month | dormant count, dormant customer profile | `mart_dormancy` exists; query returns this month's dormant cohort | P1 |
 | BQ-08 | Liquidity view — total deposits, daily net flow | total deposits, daily in/out, net flow trend | `mart_daily_flows` exists; query returns daily trend | P1 |
 | BQ-09 | Spending behaviour — txn type/value distribution by segment/month | txn count/value by type × segment × month | query against `fact_txn` × `dim_customer` returns the distribution | P2 |

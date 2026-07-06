@@ -47,4 +47,9 @@ Fabric-trial-wall lesson.
   availability (see `journey/07_PIPELINE_SPEC.md`).
 
 ## Addendum log
-None yet.
+- **2026-07-06 (Addendum #1):** owner override adds two more real (non-Databricks-transform)
+  systems to the source estate — **SAP HANA Cloud** (BTP Free Tier) and **Teradata** — as the
+  hosts for two of the five source systems. This does NOT change the transform/storage/serving
+  decision above (Databricks still does all Landing→Bronze→Silver→Gold transform; S3 stays sole
+  truth; Snowflake stays the serving veneer) — it only adds two more source systems upstream of
+  Landing. Full rationale: `ADR-006-real-sap-hana-teradata-cdc-showcase.md`.

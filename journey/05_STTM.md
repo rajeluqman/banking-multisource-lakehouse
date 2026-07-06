@@ -15,11 +15,11 @@
 | customer_id | string | seed/build_xwalk.py | generated | bank-wide surrogate, generated once at seed (D-04) | No |
 | sk_id_curr | string | Postgres `application` | SK_ID_CURR | passthrough | Yes (not every customer has a loan) |
 | name_orig | string | MSSQL PaySim | nameOrig | passthrough | Yes |
-| berka_client_id | string | SAP-sim `client` | client_id | passthrough | Yes |
+| berka_client_id | string | SAP HANA Cloud `client` (ADR-006) | client_id | passthrough | Yes |
 | obp_account_id | string | OBP `/accounts` | account_id | passthrough | Yes |
 | source_priority_rank | int | derived | — | CRM=1, core=2, loans=3, cards=4 (ADR-005 survivorship order) | No |
 
-### Target: `silver.sil_client` (Berka CRM — golden-record source of DOB/gender)
+### Target: `silver.sil_client` (Berka CRM via SAP HANA Cloud, ADR-006 — golden-record source of DOB/gender)
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
 |---|---|---|---|---|---|
 | client_id | string | Berka `client` | client_id | passthrough (PK) | No |
@@ -27,6 +27,16 @@
 | gender | string | Berka `client` | birth_number | 'F' if original MM > 50 else 'M' — derived in the SAME decode step as birth_date, unit-tested with known fixtures (see tests/test_birth_number_decode.py) | No |
 | birth_number_raw | — | Berka `client` | birth_number | **DROPPED after decode** (D-07) — never stored in Silver/Gold | N/A |
 | district_id | string | Berka `client` | district_id | passthrough, FK to `sil_district` | Yes (R-03 orphan check) |
+
+### Target: `silver.sil_campaign_response` (Teradata — UCI Bank Marketing, ADR-006)
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| customer_id | string | seed/teradata/load_bank_marketing.py | assigned (R-38) | deterministic sampled linkage to an existing `dim_customer_xwalk` customer_id — this is NOT a native key from the source, it's assigned at seed time | No |
+| job / marital / education | string | Teradata `bank_marketing` | job / marital / education | passthrough; feeds BQ-05 segment enrichment (ADR-006 D6.4) | Per null-rate expectation |
+| credit_in_default | boolean | Teradata `bank_marketing` | default | passthrough — second, independent default signal alongside Home Credit's `TARGET` (BQ-05); NEVER merged/reconciled automatically, surfaced as a disagreement if the two differ | No |
+| avg_yearly_balance | decimal | Teradata `bank_marketing` | balance | passthrough; currency assumed EUR (source is a Portuguese bank study) — tagged with a currency code at seed like every other monetary column (D-12) | No |
+| prior_campaign_outcome | string | Teradata `bank_marketing` | poutcome | passthrough — feeds BQ-06 cross-sell ranking (ADR-006 D6.4) | Yes (source uses "unknown" for no-prior-contact, kept as an explicit category, not nulled) |
+| subscribed_term_deposit | boolean | Teradata `bank_marketing` | y | passthrough — one more product flag for BQ-01's product-mix count | No |
 
 ### Target: `silver.sil_card_txn` (PaySim)
 | Target column | Type | Source | Source column | Transform rule | Nullable? |

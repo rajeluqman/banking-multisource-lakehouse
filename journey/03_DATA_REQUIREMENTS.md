@@ -7,8 +7,8 @@
 | BQ-02 fraud count/value/type MoM | `isFraud`, `amount`, `type`, `step`→txn_ts | Yes (PaySim) | `step`→timestamp at seed (R-06); `isFraud` vs `isFlaggedFraud` disambiguation (R-08) |
 | BQ-03 fraud→CRM SLA | fraud txn timestamp, CRM ticket timestamp, customer_id | Fraud side yes (PaySim); "CRM ticket" has no source system in this simulation | **Gap**: no ticketing source exists among the 4 systems. Resolution: derive a synthetic follow-up timestamp at Silver from Berka CRM `disp`/`client` update cadence as a documented proxy, OR mark BQ-03 partially-simulated in journey/08 with the gap named — decided at Fasa D build time, not hidden |
 | BQ-04 loan funnel | application date, decision date, approved flag | Yes (Home Credit `application`, decision proxied by `previous_application` NAME_CONTRACT_STATUS or approval flag) | Home Credit has no explicit "days to decision" field for the target dataset — approximate via `DAYS_DECISION` in `previous_application` (needs source-column confirmation at STTM time, not assumed) |
-| BQ-05 default rate by segment + active high-risk list | `TARGET` (default label), income (`AMT_INCOME_TOTAL`), employment (`NAME_INCOME_TYPE`/`ORGANIZATION_TYPE`), active flag (xwalk cross-reference vs OBP/Berka activity) | Yes (Home Credit); "ACTIVE" needs a cross-source activity signal | Segment bands defined below; "active" = customer has ≥1 txn in the trailing 90 days per `dim_customer_xwalk`-joined activity |
-| BQ-06 cross-sell (deposit, no card/loan) | deposit balance (Berka `account`/OBP), card presence (PaySim), loan presence (Home Credit) | Yes, per-source | Requires xwalk join across all 3 to prove ABSENCE of card/loan, not just presence — absence-of-a-row logic, tested explicitly |
+| BQ-05 default rate by segment + active high-risk list | `TARGET` (default label), income (`AMT_INCOME_TOTAL`), employment (`NAME_INCOME_TYPE`/`ORGANIZATION_TYPE`), active flag (xwalk cross-reference vs OBP/Berka activity), plus `job`/`education`/`default` from Teradata Bank Marketing (ADR-006 D6.4) | Yes (Home Credit); "ACTIVE" needs a cross-source activity signal; Bank Marketing's `job`/`education` enrich the segment cut, its `default` flag is a second independent risk signal on the same `customer_id` | Segment bands defined below; "active" = customer has ≥1 txn in the trailing 90 days per `dim_customer_xwalk`-joined activity; Bank Marketing's `default` disagreement with Home Credit's `TARGET` is surfaced, not silently reconciled |
+| BQ-06 cross-sell (deposit, no card/loan) | deposit balance (Berka `account`/OBP), card presence (PaySim), loan presence (Home Credit), prior campaign responsiveness (`poutcome`/`y` from Teradata Bank Marketing, ADR-006 D6.4) | Yes, per-source | Requires xwalk join across all 3 to prove ABSENCE of card/loan, not just presence — absence-of-a-row logic, tested explicitly; campaign-response field ranks (not gates) the qualifying list |
 | BQ-07 dormancy | last txn date per customer | Yes (Berka `trans`, PaySim, OBP transactions) | "no txn in X days" defined below; needs xwalk-resolved "any source" last-activity, not per-source |
 | BQ-08 liquidity/net flow | account balances + daily txn in/out | Yes (Berka `account`, OBP balances/transactions) | Currency normalization (D-12) before aggregating CZK + OBP-native currency |
 | BQ-09 spending distribution | txn type/value, customer segment, month | Yes (PaySim `type`/`amount`, Berka CRM demographics via xwalk) | Segment = same income-band definition as BQ-05, reused not reinvented |
@@ -49,7 +49,18 @@
 - BQ-03's CRM-ticket gap (no source system for support tickets) is a NAMED gap, not silently
   papered over — see the BQ-03 row above; the Fasa D build must either implement the documented
   proxy or mark the BQ honestly partial in journey/08.
-- All four source datasets are assumed obtainable (Kaggle CSVs for Home Credit/PaySim/Berka,
-  live OBP sandbox reachable) — **this assumption failed pre-build** (no Kaggle API credentials in
-  this environment); see `PROJECT_STATUS.md` "▶ RESUME HERE" and `BUILD_REPORT.md` for how this
-  was resolved for the dev-loop vs what remains for the canonical run.
+- All source datasets are assumed obtainable (Kaggle CSVs for Home Credit/PaySim/Berka, live OBP
+  sandbox reachable, UCI Bank Marketing direct-download) — **the Kaggle part of this assumption
+  failed pre-build** (no Kaggle API credentials in this environment; UCI Bank Marketing was
+  independently verified reachable with no auth); see `PROJECT_STATUS.md` "▶ RESUME HERE" and
+  `BUILD_REPORT.md` for how this was resolved for the dev-loop vs what remains for the canonical
+  run.
+- (unverified) Bank Marketing's deterministic sampled linkage to `dim_customer_xwalk` (R-38,
+  ADR-006 D6.2) assumes the xwalk population is large enough that a meaningful sample (not a tiny
+  fraction) gets a campaign-response row — true for the full Home Credit population (~307K), needs
+  re-checking if the dev-loop's sample-set subset (D-14) is small enough to make this coverage
+  thin; not yet verified against an actual seeded subset size.
+- SAP HANA Cloud / Teradata Free Tier instances are assumed reachable over the internet (endpoint
+  exposure enabled, per R-39) once the owner provisions them — **not yet provisioned/verified this
+  session**; all SAP HANA/Teradata code is written against this assumption and is UNVERIFIED
+  against a live instance until the owner supplies connection details.

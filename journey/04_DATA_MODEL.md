@@ -14,8 +14,9 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `sil_bureau` | one row per bureau-reported credit line | External credit bureau record | Silver |
 | `sil_previous_application` | one row per prior loan application | Prior application | Silver |
 | `sil_card_txn` | one row per PaySim transaction | Card/mobile-money transaction | Silver |
-| `sil_client` / `sil_account` / `sil_disp` / `sil_card` / `sil_loan` / `sil_trans` / `sil_district` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product | Silver |
+| `sil_client` / `sil_account` / `sil_disp` / `sil_card` / `sil_loan` / `sil_trans` / `sil_district` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product (now sourced from SAP HANA Cloud, ADR-006) | Silver |
 | `sil_obp_accounts` / `sil_obp_transactions` | one row per OBP account / transaction | Core banking account/transaction | Silver |
+| `sil_campaign_response` | one row per Teradata Bank Marketing record (post-xwalk-linkage) | Marketing/campaign response (ADR-006) | Silver |
 | `dim_customer` | one row per bank-wide `customer_id` (golden record) | Customer | Gold |
 | `dim_date` | one row per calendar date | Date | Gold |
 | `fact_txn` | one row per transaction (any source, unioned + conformed) | Financial transaction | Gold |
@@ -61,3 +62,10 @@ person, mapped to each source's native key. Within a single source, native keys 
 identity is needed here (unlike CIL's near-duplicate-video problem); the hard problem is
 cross-system resolution, not de-duplication of near-identical content. This is the `identity:`
 block already filled in `gates/framework.yml`.
+
+**Teradata/Bank Marketing exception (ADR-006 D6.2, R-38)**: this source has no native key at all —
+it is not a 5th independent identity to resolve, it is deterministically ASSIGNED an existing
+`customer_id` at seed time (sampled without replacement from the xwalk population). `sil_campaign_
+response` therefore joins to `dim_customer` via `customer_id` directly, with no separate native-key
+column — this is stated explicitly so a future reader doesn't mistake it for a 6th real identity
+system.

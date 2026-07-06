@@ -7,6 +7,7 @@
 | Layer | Storage | Compute/engine | Sanctioned surface |
 |---|---|---|---|
 | Landing/Bronze/Silver/Gold | S3 `s3://<bucket>/banking/` (local-disk fallback for dev) | Databricks portable PySpark + Delta | `pipeline/`, `seed/` |
+| Sources: SAP HANA Cloud (BTP Free Tier), Teradata (ADR-006) | Owner-provisioned cloud instances, hosting Berka / UCI Bank Marketing | `hdbcli` / Teradata driver, CDC-poll (trigger + change-table, D6.3) | seed/sap_hana/, seed/teradata/, pipeline/extract/sap_hana_extract.py, pipeline/extract/teradata_extract.py, pipeline/extract/cdc_common.py |
 | Serving (Fasa E, optional) | Gold S3 prefix, read-only | Snowflake external tables (or DuckDB $0 fallback) | Fasa E serving scripts only |
 | Governance | Unity Catalog over the S3 external locations | — | RBAC grants (`journey/09_SECURITY_AND_ACCESS.md` §3), lineage, audit |
 
@@ -17,7 +18,8 @@ Full alternatives-considered discussion: `governance/ADR/ADR-002-ratified-stack.
 |---|---|---|
 | Microsoft Fabric / OneLake (anywhere — build or serving) | Not on the resume; the owner's active Fabric trial serves a separate project | ADR-002 |
 | Delta Live Tables (`import dlt`) | Databricks-notebook lock-in; portable PySpark must survive the disposable trial being deleted | ADR-002 |
-| Kafka / Confluent Kafka / streaming CDC in v1 | Batch-first ruling; CDC is a later fasa | ADR-004 |
+| Kafka / Confluent Kafka / streaming | Batch-first ruling holds for Postgres/MSSQL; the SAP HANA/Teradata CDC-poll pattern (ADR-006) is deliberately NOT Kafka-based (portable trigger/change-table, not a message broker) | ADR-004 (+ Addendum #1), ADR-006 |
+| SAP Smart Data Integration / Landscape Transformation (SLT), Teradata QueryGrid | Platform-engineer/DBA configuration work, not data-engineer connector-writing — contradicts the owner's stated learning goal for the SAP HANA/Teradata sources | ADR-006 |
 | Terraform / IaC | ~3 cloud resources total — ceremony, not warranted; resume doesn't claim IaC | `01_OPUS_DECISIONS.md` D-13 (CIL planning lab) |
 | ML training libs (sklearn/xgboost/tensorflow/torch) | Data-engineering portfolio repo — `isFraud`/`TARGET` are labels to serve, never predict | `journey/02_BUSINESS_QUESTIONS.md` "Explicitly out of scope" |
 | Vector DB / RAG (langchain/chromadb/pinecone) | Wrong project | `journey/02_BUSINESS_QUESTIONS.md` "Explicitly out of scope" |
@@ -26,9 +28,11 @@ Full alternatives-considered discussion: `governance/ADR/ADR-002-ratified-stack.
 
 ## Ingestion allowlist
 Only these ingestion mechanisms are sanctioned: psycopg2/sqlalchemy watermark extractor
-(PostgreSQL), pyodbc/sqlalchemy watermark extractor (MS SQL Server), simulated SFTP file-drop
-pickup (SAP-sim), Open Bank Project sandbox REST API client, BNM OpenAPI (optional FX enrich
-only). Anything else (Fivetran/Airbyte/a new connector) requires an ADR before adoption.
+(PostgreSQL), pyodbc/sqlalchemy watermark extractor (MS SQL Server), `hdbcli` CDC-poll extractor
+(SAP HANA Cloud, ADR-006 — trigger/change-table pattern only, NOT SAP SLT/SDI), Teradata CDC-poll
+extractor (ADR-006 — same pattern, NOT QueryGrid), Open Bank Project sandbox REST API client, BNM
+OpenAPI (optional FX enrich only). Anything else (Fivetran/Airbyte/a new connector, or platform-
+native replication middleware) requires an ADR before adoption.
 
 ## Enforcement
 `gates/boundary_contract.py` checks:
