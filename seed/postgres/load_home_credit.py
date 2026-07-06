@@ -37,7 +37,7 @@ def _engine():
     host = os.environ.get("POSTGRES_HOST", "localhost")
     port = os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ.get("POSTGRES_DB", "banking_sales")
-    return create_engine(f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}")
+    return create_engine(f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}") # secrets-scan:allow — built from env vars, not a literal secret
 
 
 def load_table(engine, data_dir: Path, table: str, sample: int | None) -> int:

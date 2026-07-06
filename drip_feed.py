@@ -27,7 +27,7 @@ def _postgres_engine():
     host = os.environ.get("POSTGRES_HOST", "localhost")
     port = os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ.get("POSTGRES_DB", "banking_sales")
-    return create_engine(f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}")
+    return create_engine(f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}") # secrets-scan:allow — built from env vars, not a literal secret
 
 
 def _mssql_engine():
@@ -37,7 +37,7 @@ def _mssql_engine():
     port = os.environ.get("MSSQL_PORT", "1433")
     db = os.environ.get("MSSQL_DB", "banking_cards")
     return create_engine(
-        f"mssql+pyodbc://{user}:{pwd}@{host}:{port}/{db}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+        f"mssql+pyodbc://{user}:{pwd}@{host}:{port}/{db}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" # secrets-scan:allow — built from env vars, not a literal secret
     )
 
 
