@@ -1,0 +1,153 @@
+# pipeline/orchestrate_config.yml — the dependency graph + per-source cadence that
+# pipeline/orchestrate.py reads (ADR-007 D7.3). Same "one config, scripts read from it,
+# nobody hardcodes the DAG shape in Python" philosophy as gates/framework.yml.
+#
+# `depends_on` here is the REAL per-file dependency graph (derived from reading each Gold
+# builder's actual `layer_path(...)` reads this build session — anti-shortcut rule: ground
+# truth over the design doc's illustrative shorthand), not the simplified
+# "[silver] -> [6 dims/facts] -> [9 marts]" block-diagram shown in
+# governance/ADR/ADR-007-decoupled-orchestration-and-historical-data-strategy.md D7.3 (that
+# prose is a summary for readability; a dependency-AWARE orchestrator is only worth building
+# if its graph is the accurate one — e.g. dim_customer_xwalk/dim_date load from a seed-time
+# CSV artifact and a calendar range respectively, so they have no upstream pipeline stage at
+# all, not "depends on all 5 Silver domains" as the block-diagram would suggest).
+#
+# cadence: batch (scheduled JDBC/API pull) | cdc_poll (short-interval `_cdc_log` poll,
+# ADR-006 D6.3) | on_upstream (dependency-triggered — runs once its `depends_on` all
+# succeeded, not on its own clock; every non-extraction stage is this).
+
+stages:
+  # ---- Landing extraction (5 sources) ----
+  - name: postgres_extract
+    module: pipeline.extract.postgres_extract
+    cadence: batch
+    depends_on: []
+
+  - name: mssql_extract
+    module: pipeline.extract.mssql_extract
+    cadence: batch
+    depends_on: []
+
+  - name: sap_hana_extract
+    module: pipeline.extract.sap_hana_extract
+    cadence: cdc_poll
+    depends_on: []
+
+  - name: teradata_extract
+    module: pipeline.extract.teradata_extract
+    cadence: cdc_poll
+    depends_on: []
+
+  - name: obp_client
+    module: pipeline.extract.obp_client
+    cadence: batch  # snapshot-append (journey/01), no watermark/CDC concept — still a scheduled pull, not a trigger poll
+    depends_on: []
+
+  # ---- Landing -> Bronze promotion gate (transport integrity, ADR-003/D-15) ----
+  - name: promotion_gate
+    module: pipeline.promote.promotion_gate
+    cadence: on_upstream
+    depends_on: [postgres_extract, mssql_extract, sap_hana_extract, teradata_extract, obp_client]
+
+  # ---- Bronze -> Silver: 5 independently-runnable domain pipelines (ADR-007 D7.1) ----
+  - name: silver_sales
+    module: pipeline.silver.silver_sales
+    cadence: on_upstream
+    depends_on: [promotion_gate]
+
+  - name: silver_fraud
+    module: pipeline.silver.silver_fraud
+    cadence: on_upstream
+    depends_on: [promotion_gate]
+
+  - name: silver_crm
+    module: pipeline.silver.silver_crm
+    cadence: on_upstream
+    depends_on: [promotion_gate]
+
+  - name: silver_marketing
+    module: pipeline.silver.silver_marketing
+    cadence: on_upstream
+    depends_on: [promotion_gate]
+
+  - name: silver_core_banking
+    module: pipeline.silver.silver_core_banking
+    cadence: on_upstream
+    depends_on: [promotion_gate]
+
+  # ---- Silver -> Gold: dims/facts ----
+  - name: dim_customer_xwalk
+    module: pipeline.gold.dim_customer_xwalk
+    cadence: on_upstream
+    depends_on: []  # loads seed/artifacts/dim_customer_xwalk.csv, a seed-time artifact — not an orchestrated stage
+
+  - name: dim_date
+    module: pipeline.gold.dim_date
+    cadence: on_upstream
+    depends_on: []  # self-contained calendar-range generation, no source read
+
+  - name: dim_customer
+    module: pipeline.gold.dim_customer
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_crm, silver_sales]  # reads silver/client + silver/application
+
+  - name: fact_txn
+    module: pipeline.gold.fact_txn
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_fraud, silver_crm]  # silver/card_txn + silver/trans + silver/disp
+
+  - name: fact_card_fraud
+    module: pipeline.gold.fact_card_fraud
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_fraud]  # silver/card_txn
+
+  - name: fact_loan_application
+    module: pipeline.gold.fact_loan_application
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_sales]  # silver/application
+
+  # ---- Gold marts (BQ-01..10) ----
+  - name: mart_customer_360
+    module: pipeline.gold.mart_customer_360
+    cadence: on_upstream
+    depends_on: [dim_customer, fact_txn, fact_loan_application, silver_marketing]
+
+  - name: mart_cross_sell
+    module: pipeline.gold.mart_cross_sell
+    cadence: on_upstream
+    depends_on: [dim_customer, fact_loan_application, fact_txn, dim_customer_xwalk, silver_marketing, silver_crm]
+
+  - name: mart_daily_flows
+    module: pipeline.gold.mart_daily_flows
+    cadence: on_upstream
+    depends_on: [fact_txn, silver_crm]
+
+  - name: mart_dormancy
+    module: pipeline.gold.mart_dormancy
+    cadence: on_upstream
+    depends_on: [dim_customer, fact_txn]
+
+  - name: mart_fraud_daily
+    module: pipeline.gold.mart_fraud_daily
+    cadence: on_upstream
+    depends_on: [fact_card_fraud]
+
+  - name: mart_fraud_followup
+    module: pipeline.gold.mart_fraud_followup
+    cadence: on_upstream
+    depends_on: [fact_card_fraud, dim_customer_xwalk, silver_crm]
+
+  - name: mart_loan_funnel
+    module: pipeline.gold.mart_loan_funnel
+    cadence: on_upstream
+    depends_on: [silver_sales]
+
+  - name: mart_risk_segment
+    module: pipeline.gold.mart_risk_segment
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_sales, silver_marketing, fact_txn]
+
+  - name: mart_pipeline_health
+    module: pipeline.gold.mart_pipeline_health
+    cadence: on_upstream
+    depends_on: [silver_sales, silver_fraud, silver_crm, silver_marketing, silver_core_banking]

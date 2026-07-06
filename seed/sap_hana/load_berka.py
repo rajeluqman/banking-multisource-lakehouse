@@ -29,6 +29,7 @@ import pandas as pd
 from hdbcli import dbapi
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from pipeline.extract.cdc_initial_snapshot import extract_initial_snapshot
 from seed.common.cdc_ddl import setup_cdc
 from seed.common.seeding_utils import SEED_DAY, rebase_dates, seeded_random
 
@@ -82,6 +83,8 @@ def _load_table(conn, data_dir: Path, table: str, pk_column: str, date_columns: 
                      df.astype(str).values.tolist())
     conn.commit()
 
+    extract_initial_snapshot(df, "sap_hana", table)  # R-40/ADR-007 D7.5 — land the bulk load
+    # into Landing BEFORE triggers exist, so it isn't silently missed by the CDC path.
     setup_cdc(conn, table, pk_column)  # ADR-006 D6.3 — _cdc_log + triggers, right after seeding
     return len(df)
 

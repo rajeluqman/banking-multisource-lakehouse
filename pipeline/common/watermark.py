@@ -71,3 +71,28 @@ def write_watermark(source: str, table: str, value: str) -> None:
         "written_at": datetime.now(timezone.utc).isoformat(),
     }
     _write_text(_watermark_path(source, table), json.dumps(payload))
+
+
+def _run_status_path(stage: str) -> str:
+    return control_path("run_status", f"{stage}.json")
+
+
+def write_run_status(stage: str, status: str, error: str | None = None) -> None:
+    """One JSON file per stage, OVERWRITTEN each run (latest-status-only, same control-plane
+    store as the watermarks above — ADR-007 D7.3) — pipeline/orchestrate.py writes this after
+    every stage; pipeline/gold/mart_pipeline_health.py (BQ-10) reads it back alongside its
+    row-count reconciliation, so a run's ORCHESTRATION health (did the stage even complete?)
+    is visible next to its DATA health (did the row counts reconcile?), not just one or the
+    other."""
+    payload = {
+        "stage": stage, "status": status, "error": error,
+        "written_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_text(_run_status_path(stage), json.dumps(payload))
+
+
+def read_run_status(stage: str) -> dict | None:
+    """Returns the latest {stage, status, error, written_at} row for `stage`, or None if the
+    orchestrator has never run it."""
+    text = _read_text(_run_status_path(stage))
+    return json.loads(text) if text is not None else None

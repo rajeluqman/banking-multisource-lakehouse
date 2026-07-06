@@ -131,3 +131,68 @@ def _promote_cdc(spark: SparkSession, source: str, table: str, events_df) -> Non
         existing = spark.read.format("delta").load(bronze_path).select("pk_value", "op", "seq")
         events_df = events_df.join(existing, on=["pk_value", "op", "seq"], how="left_anti")
     events_df.write.format("delta").mode("append").save(bronze_path)
+
+
+# ---- standalone stage entrypoint (ADR-007 D7.3 — one node in pipeline/orchestrate.py's
+# dependency graph, run after all 5 extraction stages) ----
+
+# (source, table, mode) — mode "cdc" reads Landing at `<table>_cdc/dt=*` (cdc_common.py's
+# poll shape); mode "batch" reads Landing at `<table>/dt=*` (jdbc_batch_common.py's / R-40's
+# cdc_initial_snapshot.py's shape). SAP HANA/Teradata each get BOTH: the ongoing CDC poll
+# AND the one-time R-40 initial snapshot, which lands at the plain (non-`_cdc`) table name.
+SOURCE_TABLES: dict[str, list[tuple[str, str]]] = {
+    "postgres": [
+        (t, "batch") for t in (
+            "application", "bureau", "bureau_balance", "previous_application",
+            "pos_cash_balance", "credit_card_balance", "installments_payments",
+        )
+    ],
+    "mssql": [("paysim_transactions", "batch")],
+    "sap_hana": (
+        [(t, "cdc") for t in ("client", "account", "disp", "card", "loan", "trans", "district")]
+        + [(t, "batch") for t in ("client", "account", "disp", "card", "loan", "trans", "district")]
+    ),
+    "teradata": [("bank_marketing", "cdc"), ("bank_marketing", "batch")],
+    "obp": [("accounts", "batch"), ("transactions", "batch")],
+}
+
+
+def _landing_partitions(source: str, landing_table: str) -> list[str]:
+    """Lists `dt=*` Landing partitions for (source, landing_table) not yet marked
+    `_promoted` — local-disk-fallback discovery (real-S3 discovery would list via boto3;
+    UNVERIFIED against live S3 this session, same limitation as the rest of this build)."""
+    landing_path = layer_path("landing", source, landing_table)
+    landing_dir = Path(landing_path.replace("s3://", "/tmp/s3_staging/"))
+    if not landing_dir.exists():
+        return []
+    return [
+        f"{landing_path}/{dt_dir.name}"
+        for dt_dir in sorted(landing_dir.glob("dt=*"))
+        if not (dt_dir / "_promoted").exists()
+    ]
+
+
+def main() -> int:
+    from pipeline.common.spark_session import get_spark
+
+    spark = get_spark("promotion_gate")
+    promoted, quarantined = 0, 0
+    for source, entries in SOURCE_TABLES.items():
+        for table, mode in entries:
+            landing_table = f"{table}_cdc" if mode == "cdc" else table
+            for partition_path in _landing_partitions(source, landing_table):
+                ok = promote_partition(spark, source, table, partition_path, mode)
+                if ok:
+                    # Marked ONLY on success — a quarantined partition stays pending so it
+                    # keeps surfacing (and re-alerting) on every run until fixed, rather than
+                    # being silently swept under the rug (ADR-003 "never silent").
+                    _local_partition_dir(partition_path).joinpath("_promoted").write_text("")
+                    promoted += 1
+                else:
+                    quarantined += 1
+    print(f"promotion_gate complete: {promoted} partition(s) promoted, {quarantined} quarantined.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -13,14 +13,15 @@ Owner asked for the architecture to look like a real bank's decoupled pipeline e
 many small, fault-isolated components per layer, not one monolithic script — and separately
 raised three historical-data problems every production pipeline eventually hits (initial
 load vs incremental, partition pruning, hot/cold storage economics). Both threads converge
-on the same fix: this repo's current `pipeline/silver/build_silver.py` is a single file
-doing all Silver tables, which is the opposite of decoupled, and none of Gold's fact tables
-are partitioned, which is the opposite of query-efficient at scale.
+on the same fix: this repo's current pipeline/silver/build_silver.py (since deleted — see
+Consequences) was a single file doing all Silver tables, which is the opposite of decoupled,
+and none of Gold's fact tables are partitioned, which is the opposite of query-efficient at
+scale.
 
 ## Decision
 
 ### D7.1 — Silver splits into 5 domain-scoped pipelines (was 1 file)
-`pipeline/silver/build_silver.py` is replaced by 5 independently-runnable modules, one per
+pipeline/silver/build_silver.py is replaced by 5 independently-runnable modules, one per
 source domain, each with its own DQ checks embedded (not a separate top-level DQ stage —
 see D7.2 for why):
 - pipeline/silver/silver_sales.py (Home Credit: application, bureau, previous_application)
@@ -93,8 +94,9 @@ risk register (this repo's own additions, alongside R-36…R-39).
 | Generic S3 lifecycle policy for Strategy 3 | Works, but less concrete/demoable than using Teradata (already in the architecture) as a real EDW-shaped cold tier |
 
 ## Consequences
-- `pipeline/silver/build_silver.py` is DELETED, replaced by 5 files — any doc referencing
-  the old filename needs updating (checked by `gates/doc_reference_contract.py`).
+- pipeline/silver/build_silver.py is DELETED (done this build session), replaced by 5 files
+  — any doc referencing the old filename needs updating (checked by
+  `gates/doc_reference_contract.py`).
 - `pipeline/gold/fact_txn.py`/`fact_card_fraud.py` gain a partition column derivation step
   (`txn_year`, `txn_month`) not previously present.
 - New files: pipeline/orchestrate_config.yml, pipeline/orchestrate.py,
@@ -106,4 +108,15 @@ risk register (this repo's own additions, alongside R-36…R-39).
   build step.
 
 ## Addendum log
-None yet.
+- **2026-07-06 (Addendum #1) — All 7 `NEXT_BUILD_KICKOFF.md` tasks implemented (code only,
+  same "code first, run later" split as every prior fasa — no live DB/cloud connections in
+  this session).** D7.1 done (pipeline/silver/silver_sales.py, silver_fraud.py, silver_crm.py,
+  silver_marketing.py, silver_core_banking.py; build_silver.py deleted). D7.3 done
+  (pipeline/orchestrate_config.yml + pipeline/orchestrate.py). D7.4 Strategy 1 done
+  (`--full-backfill` flag). D7.4 Strategy 2 done (`.partitionBy("txn_year", "txn_month")` on
+  fact_txn.py/fact_card_fraud.py). D7.4 Strategy 3 / ADR-006 Addendum #1 done
+  (pipeline/gold/cold_tier/teradata_cold_view.sql). D7.5/R-40 done
+  (pipeline/extract/cdc_initial_snapshot.py, wired into both CDC-source seed loaders) — see
+  BUILD_REPORT.md for the one follow-on gap this surfaced (the initial-snapshot Bronze table
+  isn't yet UNIONed into silver_crm.py/silver_marketing.py's CDC-log read, since that wiring
+  wasn't part of this ADR's task list).

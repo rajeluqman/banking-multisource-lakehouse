@@ -162,11 +162,55 @@ so this isn't just a one-time grep — it's checked on every future commit too.
 - `gates/doc_reference_contract.py` caught a real naming-drift bug the moment the first Gold
   file existed (`sil_customer_xwalk` vs `dim_customer_xwalk`) — fixed, not ignored.
 
+## 10. ADR-007 build (2026-07-06, third session same day)
+
+All 7 tasks from `NEXT_BUILD_KICKOFF.md` implemented, code-only (no live DB/cloud/Spark this
+session, same split as every prior fasa). Per-task evidence:
+
+| # | Task | Where | Status |
+|---|---|---|---|
+| 1 | R-40 initial-snapshot extractor | `pipeline/extract/cdc_initial_snapshot.py`, wired into `seed/sap_hana/load_berka.py` + `seed/teradata/load_bank_marketing.py` | code done; **smoke-tested this session** with a synthetic pandas fixture (local disk only, no live DB) — parquet + manifest + `_SUCCESS` written correctly, second call correctly returned `None` via the idempotency watermark guard |
+| 2 | Silver split into 5 domain pipelines | `pipeline/silver/silver_{sales,fraud,crm,marketing,core_banking}.py`; `build_silver.py` deleted; shared helpers (`build_simple_table`, `latest_state_from_cdc_log`) moved into `pipeline/silver/common.py` per ADR-007's "shared helpers stay shared" rule | code done, UNVERIFIED live |
+| 3 | Config-driven orchestrator | `pipeline/orchestrate_config.yml` + `pipeline/orchestrate.py` (Kahn's-algorithm topological sort, `--only` for a targeted + its transitive deps) | code done, UNVERIFIED live. The yml's `depends_on` graph is the REAL per-file dependency graph (derived by reading every Gold builder's actual `layer_path()` reads this session), not the ADR's simplified `[silver] -> [6 dims/facts] -> [9 marts]` block-diagram — e.g. `dim_customer_xwalk`/`dim_date` load from a seed-time CSV / self-contained calendar range and have NO upstream pipeline-stage dependency, which the block-diagram would have gotten wrong. Also required giving `pipeline/promote/promotion_gate.py` a `main()` (it had none before — it was a library of functions called with explicit args, not a standalone runnable stage), since ADR-007 D7.3's graph names it as one node |
+| 4 | `mart_pipeline_health.py` reads orchestrator run-status | `pipeline/common/watermark.py` gained `write_run_status`/`read_run_status` (same control-plane store, new `_control/run_status/<stage>.json` key shape); `mart_pipeline_health.py` adds `orchestrator_stage`/`orchestrator_status`/`orchestrator_error` columns, additive only — existing row-count reconciliation logic untouched | code done, UNVERIFIED live |
+| 5 | Partitioning fix | `.partitionBy("txn_year", "txn_month")` on `fact_txn.py`/`fact_card_fraud.py`, columns derived via `year()`/`month()` on `txn_ts` before write | code done, UNVERIFIED live |
+| 6 | `--full-backfill` flag | `postgres_extract.py`/`mssql_extract.py`; `jdbc_batch_common.extract_table()` gained a `full_backfill` param that forces `last_watermark = None` regardless of stored state | code done, UNVERIFIED live. Deliberately parsed ONLY in each script's `__main__` guard, not inside `main()` — `main()` keeps a zero-arg signature so `pipeline/orchestrate.py`'s in-process `module.main()` calls can't accidentally have the orchestrator's own `sys.argv` parsed by the stage's argparse |
+| 7 | Teradata cold-tier SQL view | `pipeline/gold/cold_tier/teradata_cold_view.sql` — aggregate-only (job/education/prior-campaign-outcome/week), no `customer_id`, no row-level PII; cutover date is an explicit `{{CDC_CUTOVER_DATE}}` placeholder (deliberately not derived — `bank_marketing` has no real per-row event timestamp besides seed-time `created_at`) | written, UNVERIFIED — no live Teradata instance to run the DDL against this session |
+
+**One follow-on gap this surfaced, named rather than silently expanded into scope**: R-40's
+initial-snapshot data lands in Bronze as a plain (non-`_cdc`) batch-shaped table, but
+`silver_crm.py`/`silver_marketing.py` still only read the `_cdc` op-log Bronze tables (this
+was true of the pre-ADR-007 code too — not a regression). Wiring the UNION is a follow-up, not
+part of `NEXT_BUILD_KICKOFF.md`'s 7 items.
+
+**Gate run (this session, after all 7 tasks)**:
+```
+$ python3 gates/journey_completeness.py
+✅ journey completeness OK
+$ python3 gates/boundary_contract.py
+✅ boundary contract OK
+$ python3 gates/doc_reference_contract.py
+DOC-REFERENCE CONTRACT: OK — 21 doc(s), all references resolve.
+$ python3 gates/secrets_scan.py
+✅ secrets scan OK
+$ python3 -m unittest discover tests
+Ran 7 tests in 0.000s — OK
+$ find pipeline seed tests -name "*.py" | xargs -n1 python3 -m py_compile
+(all clean, including every new/changed file this session)
+```
+`doc_reference_contract.py`'s C2 check would have caught `ADR-007`'s own backtick references
+to the now-deleted `build_silver.py` — fixed by de-backticking those 3 references (they're
+historical-narrative prose describing a completed deletion, not a live path claim) rather than
+leaving a dangling reference (same "drift is a lie waiting to mislead" discipline as Fasa D's
+`sil_customer_xwalk`/`dim_customer_xwalk` catch).
+
 ## Hand-off
 
 Per `05_BUILD_AND_VERIFY_PROMPTS.md`, this repo is ready for the Opus verify pass (prompt B) —
-with the understanding that "verify against ground truth" for items in §8 above will correctly
-find them unimplemented, because they ARE unimplemented, and are named here rather than hidden.
-The owner's next action: provision SAP HANA Cloud + Teradata, supply Kaggle credentials (or
-accept the UCI-only partial dataset set), open a dedicated Codespace, and run Fasa A → D for
-real — at which point §5's idempotency proofs and §2's per-BQ query outputs become obtainable.
+with the understanding that "verify against ground truth" for items in §8 and §10 above will
+correctly find UNVERIFIED-live items still unverified against live infra, because they ARE,
+and are named here rather than hidden. The owner's next action: provision SAP HANA Cloud +
+Teradata, supply Kaggle credentials (or accept the UCI-only partial dataset set), open a
+dedicated Codespace, and run Fasa A → D plus the new orchestrator for real — at which point
+§5's idempotency proofs, §2's per-BQ query outputs, and §10's UNVERIFIED-live rows all become
+obtainable.

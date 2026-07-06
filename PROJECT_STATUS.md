@@ -1,9 +1,22 @@
 # banking-multisource-lakehouse — PROJECT STATUS (resume-safe checkpoint)
 
 ## ▶ RESUME HERE (read this first)
-**Fasa 0 → D is built** (governance kit, 5-source seeding, Landing extractors + CDC, promotion
-gate, Silver transforms, Gold star schema + all 10 BQ marts + UC RBAC grants). All four
-bootstrap gates are green. Full self-audit: `BUILD_REPORT.md`.
+**Fasa 0 → D is built, and ADR-007's 7-task build is now ALSO code-complete** (2026-07-06,
+third session same day). All four gates + the full unit-test suite are green — see
+`BUILD_REPORT.md` §"ADR-007 build (2026-07-06)" for the per-task evidence. **Nothing has been
+run against live infrastructure yet** (no Spark, no live DB/cloud connections — owner
+instruction, this is still the shared planning Codespace) — that is the next session's job, in
+the owner's dedicated Codespace: provision SAP HANA Cloud + Teradata, supply Kaggle credentials
+(or accept UCI-only partial data), run Fasa A → D for real plus the newly-built orchestrator,
+THEN capture real output into `journey/08_SERVING_AND_EVIDENCE.md`.
+
+One follow-on gap surfaced by this session's R-40 work, not part of ADR-007's task list and
+therefore NOT implemented here (documented, not silently expanded into scope): the R-40
+initial-snapshot extractor lands the seed-time bulk load into Bronze as a plain (non-`_cdc`)
+batch-shaped table, but `pipeline/silver/silver_crm.py`/`silver_marketing.py` only read the
+`_cdc` op-log Bronze tables — so that snapshot data doesn't reach Silver/Gold yet. A future
+task should UNION the initial-snapshot Bronze table into those two domain pipelines' latest-
+state read.
 
 **2026-07-06 (second architecture round, same day) — `ADR-007`**: owner asked for the pipeline
 to look decoupled/fault-isolated like a real bank's estate (many small pipelines per layer, not
@@ -13,12 +26,7 @@ config-driven orchestrator, partitioning fix, explicit full-backfill flag) + `AD
 #1 (Teradata dual-role — CDC source AND a native cold-tier SQL view Power BI DirectQueries,
 bypassing the medallion for pre-cutover AGGREGATE-ONLY history). Also surfaced a real gap
 (**R-40**): the CDC extractors never capture the seed-time bulk load (triggers only fire on
-CHANGES after install) — needs an initial-snapshot extraction step. **None of ADR-007's 7 tasks
-are implemented yet** — full task list + gate bar: `NEXT_BUILD_KICKOFF.md`. This is the next
-session's job (in the owner's dedicated Codespace), same "code first, run later" split as
-before: provision SAP HANA Cloud + Teradata, supply Kaggle credentials (or accept UCI-only
-partial data), implement `NEXT_BUILD_KICKOFF.md`'s 7 items, THEN run everything for real and
-capture output into `journey/08_SERVING_AND_EVIDENCE.md`.
+CHANGES after install) — needed an initial-snapshot extraction step, now built (see above).
 
 Original blocker (still relevant context): this build environment has no Kaggle API
 credentials and no live AWS/Databricks/Snowflake credentials, so Home Credit/PaySim/Berka
@@ -59,8 +67,9 @@ details, never pasted into chat).
 |---|---|---|
 | gates/journey_completeness.py | ✅ OK | 2026-07-06 |
 | gates/boundary_contract.py | ✅ OK | 2026-07-06 |
-| gates/doc_reference_contract.py | ✅ OK — 20 docs, all references resolve | 2026-07-06 |
+| gates/doc_reference_contract.py | ✅ OK — 21 docs, all references resolve | 2026-07-06 |
 | gates/secrets_scan.py | ✅ OK (2 real hits caught + resolved mid-session, R-35) | 2026-07-06 |
+| python3 -m unittest discover tests | ✅ OK — 7/7 pass | 2026-07-06 |
 
 ## Open decisions for owner
 - Provide Kaggle API credentials (`~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`) so
@@ -92,3 +101,18 @@ details, never pasted into chat).
   Fasa D (Gold star schema, all 10 BQ marts, UC RBAC grants) all built and committed. Full
   self-audit in `BUILD_REPORT.md` — 4 real DQ gaps (R-04/R-11/R-17/R-29) and the "nothing has
   been run against live data" limitation are named explicitly, not hidden.
+- 2026-07-06 (third session, same day): ADR-007's all 7 tasks implemented — R-40 initial-
+  snapshot extractor (`pipeline/extract/cdc_initial_snapshot.py`, smoke-tested locally with a
+  synthetic fixture — parquet + manifest + `_SUCCESS` written correctly, idempotency guard
+  confirmed); Silver split into 5 domain pipelines (`build_silver.py` deleted); config-driven
+  orchestrator (`pipeline/orchestrate_config.yml` + `orchestrate.py`, real per-file dependency
+  graph, not the ADR's simplified block-diagram — see the yml's header comment for why);
+  `mart_pipeline_health.py` additively reads orchestrator run-status; `fact_txn`/
+  `fact_card_fraud` partitioned by `txn_year`/`txn_month`; `--full-backfill` flag on
+  `postgres_extract.py`/`mssql_extract.py` (designed so `orchestrate.py`'s in-process
+  `module.main()` calls can't be broken by argparse reading the orchestrator's own argv — see
+  each file's `main()` docstring); `pipeline/gold/cold_tier/teradata_cold_view.sql`
+  (aggregate-only, cutover date is an explicit per-deployment placeholder, not derived). All
+  four gates + `python3 -m unittest discover tests` (7/7) green; every touched/new `.py` file
+  py_compile-clean. One follow-on gap surfaced and documented above (initial-snapshot Bronze
+  data not yet UNIONed into Silver) rather than silently expanded into this session's scope.

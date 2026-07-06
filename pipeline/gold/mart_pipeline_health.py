@@ -4,6 +4,12 @@ and Landing->Bronze->Silver->Gold row-count reconciliation. This mart IS the ans
 "can we trust the numbers," not a separate hidden report (journey/06_DQ_PLAN.md).
 
 Grain: one row per (pipeline run, source) (journey/04_DATA_MODEL.md).
+
+ADR-007 D7.3 (additive, does not change the row-count reconciliation logic below): also
+surfaces the latest ORCHESTRATION status per source's Silver domain stage
+(pipeline/orchestrate.py's run-status, written via pipeline/common/watermark.py's
+`write_run_status`) — so this mart answers both "did the data counts reconcile" AND "did the
+orchestrator's stage for this source actually complete," side by side.
 """
 
 from __future__ import annotations
@@ -13,12 +19,19 @@ import datetime as dt
 from pyspark.sql import Row, SparkSession
 
 from pipeline.common.lake_paths import layer_path
-from pipeline.common.watermark import read_watermark
+from pipeline.common.watermark import read_run_status, read_watermark
 
 SOURCES_AND_TABLES = [
     ("postgres", "application"), ("mssql", "paysim_transactions"),
     ("sap_hana", "client_cdc"), ("teradata", "bank_marketing_cdc"), ("obp", "accounts"),
 ]
+
+# source -> its Silver domain pipeline's orchestrator stage name (pipeline/orchestrate_config.yml,
+# ADR-007 D7.1) — used ONLY to look up run-status, not part of the reconciliation logic itself.
+SOURCE_SILVER_STAGE = {
+    "postgres": "silver_sales", "mssql": "silver_fraud", "sap_hana": "silver_crm",
+    "teradata": "silver_marketing", "obp": "silver_core_banking",
+}
 
 
 def _row_count(spark: SparkSession, layer: str, source: str, table: str) -> int | None:
@@ -43,10 +56,15 @@ def build(spark: SparkSession) -> None:
             bronze_count is not None and silver_count is not None and silver_count <= bronze_count
         )  # Silver is <=Bronze (MERGE/dedup/quarantine can only shrink row count, never grow it)
 
+        stage_run_status = read_run_status(SOURCE_SILVER_STAGE[source])  # ADR-007 D7.3 — additive
+
         rows.append(Row(
             run_ts=run_ts, source=source, table=table,
             bronze_row_count=bronze_count, silver_row_count=silver_count,
             last_watermark=last_watermark, reconciled=reconciled,
+            orchestrator_stage=SOURCE_SILVER_STAGE[source],
+            orchestrator_status=stage_run_status["status"] if stage_run_status else None,
+            orchestrator_error=stage_run_status["error"] if stage_run_status else None,
         ))
 
     mart = spark.createDataFrame(rows)

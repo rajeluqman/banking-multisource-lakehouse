@@ -4,6 +4,7 @@ pyodbc>=5.1
 hdbcli>=2.19
 teradatasql>=17.20
 pandas>=2.2
+pyarrow>=15.0
 SQLAlchemy>=2.0
 python-dotenv>=1.0
 pyyaml>=6.0

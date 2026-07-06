@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """`fact_card_fraud` — one row per PaySim transaction flagged `isFraud=1` (journey/04). Only
 `is_fraud` is used as the KPI label; `is_flagged_fraud` stays in Silver for rule-performance
-analysis only and is NEVER read here (R-08, architect veto if it ever is)."""
+analysis only and is NEVER read here (R-08, architect veto if it ever is).
+
+Partitioned by `txn_year`/`txn_month` (ADR-007 D7.4 Strategy 2), same as `fact_txn` — Gold
+facts extend Landing's `dt=` partition-pruning principle (ADR-003) so downstream query
+engines don't full-scan a growing fraud table."""
 
 from __future__ import annotations
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, month, year
 
 from pipeline.common.lake_paths import layer_path
 
@@ -22,7 +26,8 @@ def build(spark: SparkSession) -> None:
         .join(xwalk, card_txn.name_orig_masked == xwalk.name_id, "left")
         .select("txn_id", "customer_id", "txn_ts", "txn_type", "amount", "currency")
     )
-    fraud.write.format("delta").mode("append").save(layer_path("gold", "fact_card_fraud"))
+    fraud = fraud.withColumn("txn_year", year(col("txn_ts"))).withColumn("txn_month", month(col("txn_ts")))
+    fraud.write.format("delta").partitionBy("txn_year", "txn_month").mode("append").save(layer_path("gold", "fact_card_fraud"))
 
 
 if __name__ == "__main__":

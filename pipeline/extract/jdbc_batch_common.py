@@ -25,15 +25,22 @@ def extract_table(
     jdbc_url: str,
     jdbc_properties: dict,
     updated_at_column: str = "updated_at",
+    full_backfill: bool = False,
 ) -> str:
     """Pulls rows where `updated_at_column` > (last watermark - overlap window), lands them
     as parquet under Landing `dt=<today>`, writes a manifest + `_SUCCESS` marker, and
     advances the watermark. Returns the Landing partition path written.
 
+    `full_backfill=True` (ADR-007 D7.4 Strategy 1) forces the full-pull branch below
+    regardless of existing watermark state — makes the already-present first-run behavior an
+    EXPLICIT, deliberate re-pull instead of requiring someone to manually delete watermark
+    state to get the same effect. The watermark still advances normally afterward, same as
+    any other run.
+
     Idempotent: re-running with the same watermark re-pulls the same window — downstream
     dedup happens at the Silver MERGE (PK + updated_at), not here (journey/07_PIPELINE_SPEC.md).
     """
-    last_watermark = read_watermark(source, table)
+    last_watermark = None if full_backfill else read_watermark(source, table)
     if last_watermark is not None:
         effective_start = dt.datetime.fromisoformat(last_watermark) - OVERLAP_WINDOW
         predicate = f"{updated_at_column} > '{effective_start.isoformat()}'"

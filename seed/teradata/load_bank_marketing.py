@@ -31,6 +31,7 @@ import pandas as pd
 import teradatasql
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from pipeline.extract.cdc_initial_snapshot import extract_initial_snapshot
 from seed.common.cdc_ddl import setup_cdc
 from seed.common.seeding_utils import SEED_DAY, seeded_random
 
@@ -102,6 +103,8 @@ def main() -> int:
                      df.astype(str).values.tolist())
     conn.commit()
 
+    extract_initial_snapshot(df, "teradata", "bank_marketing")  # R-40/ADR-007 D7.5 — land the
+    # bulk load into Landing BEFORE triggers exist, so it isn't silently missed by the CDC path.
     setup_cdc(conn, "bank_marketing", "customer_id")  # ADR-006 D6.3
     print(f"Teradata Bank Marketing seed complete: {len(df)} rows loaded + CDC scaffolding created.")
     return 0

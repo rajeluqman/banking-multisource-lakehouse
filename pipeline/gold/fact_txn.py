@@ -6,12 +6,16 @@ landing, so no SCD/MERGE-on-update semantics, just append of new rows resolved t
 
 v1 sources: PaySim (`sil_card_txn`) and Berka (`sil_trans`) — OBP transactions join in the
 same shape once the OBP extractor lands data (obp is snapshot-append per journey/01, not a
-volume source)."""
+volume source).
+
+Partitioned by `txn_year`/`txn_month` (ADR-007 D7.4 Strategy 2) — Landing already partitions
+by `dt=` (ADR-003); this extends the same query-pruning principle to Gold so Snowflake/Power
+BI DirectQuery/Import filters on transaction date without a full-table scan."""
 
 from __future__ import annotations
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit
+from pyspark.sql.functions import col, lit, month, year
 
 from pipeline.common.lake_paths import layer_path
 
@@ -47,7 +51,8 @@ def build(spark: SparkSession) -> None:
     )
 
     fact = paysim_facts.unionByName(berka_facts)
-    fact.write.format("delta").mode("append").save(layer_path("gold", "fact_txn"))
+    fact = fact.withColumn("txn_year", year(col("txn_ts"))).withColumn("txn_month", month(col("txn_ts")))
+    fact.write.format("delta").partitionBy("txn_year", "txn_month").mode("append").save(layer_path("gold", "fact_txn"))
 
 
 if __name__ == "__main__":
