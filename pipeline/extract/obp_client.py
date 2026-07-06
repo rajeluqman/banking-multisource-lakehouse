@@ -43,7 +43,7 @@ class OBPClient:
         username = os.environ["OBP_USERNAME"]
         password = os.environ["OBP_PASSWORD"]
         auth_header = (
-            f'DirectLogin username="{username}",password="{password}",consumer_key="{consumer_key}"'
+            f'DirectLogin username="{username}",password="{password}",consumer_key="{consumer_key}"'  # secrets-scan:allow — built from env vars, not a literal secret
         )
         req = urllib.request.Request(
             f"{self.base_url}/my/logins/direct", method="POST",

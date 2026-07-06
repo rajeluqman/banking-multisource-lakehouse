@@ -9,7 +9,7 @@
 
 ## Silver targets (Bronze → Silver, content-quality gate — ADR-003)
 
-### Target: `silver.sil_customer_xwalk`
+### Target: `silver.dim_customer_xwalk`
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
 |---|---|---|---|---|---|
 | customer_id | string | seed/build_xwalk.py | generated | bank-wide surrogate, generated once at seed (D-04) | No |
@@ -45,7 +45,7 @@
 | txn_ts | timestamp | MSSQL PaySim | step | `base_date + step * INTERVAL 1 HOUR`, rebased so max(txn_ts) = seed day (R-06, D-03.2/3) | No |
 | txn_type | string | MSSQL PaySim | type | passthrough | No |
 | amount | decimal | MSSQL PaySim | amount | passthrough; currency = "unitless" tagged as a documented source quirk (R-14) | No |
-| name_orig / name_dest | string | MSSQL PaySim | nameOrig/nameDest | passthrough; joined to `customer_id` via `sil_customer_xwalk` | Yes for merchant dest (R-09) |
+| name_orig / name_dest | string | MSSQL PaySim | nameOrig/nameDest | passthrough; joined to `customer_id` via `dim_customer_xwalk` | Yes for merchant dest (R-09) |
 | is_fraud | boolean | MSSQL PaySim | isFraud | passthrough — **this is the Gold KPI label** (R-08) | No |
 | is_flagged_fraud | boolean | MSSQL PaySim | isFlaggedFraud | passthrough — **rule-performance analysis only, NEVER used as the fraud KPI** (R-08) | No |
 | account_number_masked | string | MSSQL PaySim | nameOrig/nameDest (where account-shaped) | mask to last 4 chars (D-07) | Yes |

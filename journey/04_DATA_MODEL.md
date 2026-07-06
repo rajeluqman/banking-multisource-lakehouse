@@ -9,7 +9,7 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 ## Grain declarations (one row per table/model)
 | Table/model | Grain | Business entity | Layer |
 |---|---|---|---|
-| seed/build_xwalk.py output → Silver `sil_customer_xwalk` | one row per (bank-wide customer_id, source system) pair | Customer identity resolution | Silver (built at seed, re-synced at Silver) |
+| seed/build_xwalk.py output → Silver `dim_customer_xwalk` | one row per (bank-wide customer_id, source system) pair | Customer identity resolution | Silver (built at seed, re-synced at Silver) |
 | `sil_application` | one row per `SK_ID_CURR` | Loan applicant snapshot | Silver |
 | `sil_bureau` | one row per bureau-reported credit line | External credit bureau record | Silver |
 | `sil_previous_application` | one row per prior loan application | Prior application | Silver |
