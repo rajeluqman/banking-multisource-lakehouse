@@ -1,13 +1,23 @@
 # banking-multisource-lakehouse — PROJECT STATUS (resume-safe checkpoint)
 
 ## ▶ RESUME HERE (read this first)
-Fasa 0 (bootstrap) is complete and all four bootstrap gates are green (see "Gate status" below).
-Before Fasa A (seeding) could start, a real external blocker was found: this build environment has
-no Kaggle API credentials and no live AWS/Databricks/Snowflake credentials, so the three Kaggle
-datasets (Home Credit, PaySim, Berka) are not obtainable here, and the ratified stack's cloud
-services can't be reached. This contradicts the pre-flight checklist in
-`02_SONNET_BUILD_KICKOFF.md` ("Kaggle files on hand"). Per the anti-shortcut/STOP-GATE rule, this
-was surfaced to the owner rather than silently worked around.
+**All of Fasa 0 → D is built** (governance kit, 5-source seeding, Landing extractors + CDC,
+promotion gate, Silver transforms, Gold star schema + all 10 BQ marts + UC RBAC grants). All
+four bootstrap gates are green. Full self-audit: `BUILD_REPORT.md`.
+
+**The single biggest remaining gap: nothing has been RUN.** No dataset downloaded, no Docker
+container started, no Spark session executed, no live DB/cloud connection made — per owner
+instruction, this entire build happened as code-only in the planning session. Every mart,
+extractor, and gate is `py_compile`-clean and reviewed, but UNVERIFIED against live data. The
+next session (in the owner's dedicated Codespace) should: provision SAP HANA Cloud + Teradata,
+supply Kaggle credentials (or accept UCI-only partial data), run `make seed-all`, run the
+extractors, run `pipeline/silver/build_silver.py` and each `pipeline/gold/*.py`, and capture
+real query output into `journey/08_SERVING_AND_EVIDENCE.md`.
+
+Original blocker (still relevant context): this build environment has no Kaggle API
+credentials and no live AWS/Databricks/Snowflake credentials, so Home Credit/PaySim/Berka
+aren't obtainable here — surfaced to the owner rather than silently worked around
+(anti-shortcut/STOP-GATE rule).
 
 **2026-07-06 owner override (ADR-006):** mid-build, the owner reopened the source architecture —
 replaced the SAP-sim file-drop simulation with a real **SAP HANA Cloud** (BTP Free Tier) instance,
@@ -41,10 +51,10 @@ details, never pasted into chat).
 ## Gate status (last run)
 | Gate | Result | Date |
 |---|---|---|
-| gates/journey_completeness.py | ✅ OK | 2026-07-05 |
-| gates/boundary_contract.py | ✅ OK | 2026-07-05 |
-| gates/doc_reference_contract.py | ✅ OK — 19 docs, all references resolve | 2026-07-05 |
-| gates/secrets_scan.py | ✅ OK | 2026-07-05 |
+| gates/journey_completeness.py | ✅ OK | 2026-07-06 |
+| gates/boundary_contract.py | ✅ OK | 2026-07-06 |
+| gates/doc_reference_contract.py | ✅ OK — 20 docs, all references resolve | 2026-07-06 |
+| gates/secrets_scan.py | ✅ OK (2 real hits caught + resolved mid-session, R-35) | 2026-07-06 |
 
 ## Open decisions for owner
 - Provide Kaggle API credentials (`~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`) so
@@ -71,3 +81,8 @@ details, never pasted into chat).
   enrichment. All journey docs + governance updated in this same session; dataset downloads and
   container/cloud connections deliberately NOT run in this session per owner instruction (reserved
   for a dedicated Codespace).
+- 2026-07-06: Fasa A (seed loaders, xwalk, drip-feed, CDC DDL), Fasa B (Landing extractors incl.
+  CDC, promotion gate), Fasa C (Silver transforms, birth_number decode unit-tested 7/7 pass),
+  Fasa D (Gold star schema, all 10 BQ marts, UC RBAC grants) all built and committed. Full
+  self-audit in `BUILD_REPORT.md` — 4 real DQ gaps (R-04/R-11/R-17/R-29) and the "nothing has
+  been run against live data" limitation are named explicitly, not hidden.
