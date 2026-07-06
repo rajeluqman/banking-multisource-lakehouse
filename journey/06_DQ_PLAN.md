@@ -25,6 +25,7 @@
 | Landing→Bronze | SAP HANA/Teradata CDC dedup — redelivered/out-of-order `_cdc_log` events (R-36, R-37, ADR-006) | pipeline/promote/promotion_gate.py (dedup key: `pk_value` + `op` + `seq`) | Same promotion gate as every other source — dedup, don't drop; Bronze sees exactly-once |
 | Bronze→Silver | Bank Marketing linkage coverage — what fraction of `dim_customer_xwalk` actually got a campaign-response row (R-38) | custom PySpark DQ check (count + %, not a pass/fail threshold) | WARN + report the coverage %; a thin sample-set dev-loop population is expected to have LOW coverage, not a defect |
 | Bronze→Silver | Home Credit `TARGET` vs Bank Marketing `default` disagreement rate (BQ-05, ADR-006) | custom PySpark DQ check | Report the disagreement rate; never silently pick one signal as "correct" over the other |
+| Landing→Bronze | Seed-time bulk load never reaches `_cdc_log` (R-40, ADR-007 D7.5) — CDC triggers only fire on changes AFTER install, so the initial rows are invisible to `poll_cdc_log` | one-time "initial snapshot" extraction per CDC source, same shape as `jdbc_batch_common.py`'s first-run full-pull | Block: SAP HANA/Teradata CDC extractors must not be treated as complete until the initial snapshot has been promoted at least once |
 
 ## LLM/ML-output-specific gates
 N/A — 2026-07-05, reason: this pipeline is fully deterministic ETL/ELT (PySpark transforms over

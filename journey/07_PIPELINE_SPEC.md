@@ -30,18 +30,42 @@ details arrive via `.env` only when the owner is ready to run the extractor agai
 Until these are done, all SAP HANA/Teradata code in this repo is written but UNVERIFIED against a
 live instance — tagged as such in `BUILD_REPORT.md`, not silently claimed as tested.
 
-## Orchestration
-Local Makefile targets (`make seed`, `make landing`, `make promote`, `make silver`, `make gold`)
-for the dev loop — no private Airflow inside this repo (D-10). The repo exposes the control-plane
-orchestration contract (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md` in the planning
-workspace) so `airflow_dag_running_pipeline` can later drive this pipeline as pipeline #6;
-implementing that adoption is out of THIS repo's scope.
-- Schedule/trigger: manual/on-demand in v1 (batch-first, ADR-004) — no cron/scheduler wired by
-  default; `drip_feed.py` runs as a standalone interval loop to simulate live source traffic
-  between manual pipeline runs.
+## Orchestration (ADR-007 — decoupled, config-driven)
+27 independently-runnable pipeline components (5 extraction + 1 promotion gate + 5 Silver
+domain pipelines + 6 Gold dims/facts + 9 Gold marts + 1 orchestrator), sequenced by
+pipeline/orchestrate.py reading pipeline/orchestrate_config.yml — same "one config,
+scripts read from it" philosophy as `gates/framework.yml`, not a hardcoded DAG in Python.
+No private Airflow inside this repo (D-10). The repo exposes the control-plane orchestration
+contract (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md` in the planning workspace) so
+`airflow_dag_running_pipeline` can later drive this pipeline as pipeline #6; implementing
+that adoption is out of THIS repo's scope — `orchestrate.py` is the local dev-loop
+sequencer, not a competing scheduler.
+- Cadence per source (config-driven, not uniform): `batch` (Postgres/MSSQL — scheduled,
+  e.g. nightly) vs `cdc_poll` (SAP HANA/Teradata — short interval, e.g. every 5 min).
+  `drip_feed.py` runs as a standalone interval loop simulating live source traffic between
+  orchestrated runs.
 - Retry policy: extractors retry-with-backoff on transient failure (DB connection drop, OBP
   429/5xx); a fully failed extractor run leaves Landing partial and the promotion gate quarantines
   it — the next run is safe to just re-run (idempotent per watermark + per date partition).
+- Run-status: the orchestrator writes a (stage, status, timestamp, error) row per stage into
+  the same control-plane store `pipeline/common/watermark.py` uses — `mart_pipeline_health`
+  (BQ-10) reads this alongside its row-count reconciliation, so BQ-10 reflects orchestration
+  health, not just data counts.
+
+## Historical-data strategies (ADR-007 D7.4)
+1. **Initial load + incremental backfill** — `pipeline/extract/jdbc_batch_common.py`'s
+   watermark-or-full-pull branch, made explicit via a `--full-backfill` flag on
+   `postgres_extract.py`/`mssql_extract.py` for a deliberate historical re-pull.
+2. **Partition pruning** — `pipeline/gold/fact_txn.py`/`fact_card_fraud.py` write
+   `.partitionBy("txn_year", "txn_month")` (Landing already partitions by `dt=`, ADR-003;
+   this extends the same principle to Gold facts so Snowflake/Power BI query pruning works
+   end-to-end).
+3. **Hot/cold hybrid** — Teradata's dual-role cold-tier (`ADR-006` Addendum #1): a native
+   Teradata SQL view (pipeline/gold/cold_tier/teradata_cold_view.sql, aggregated grain
+   only — never row-level, to avoid bypassing D-07 masking / D-04 MDM resolution) serves
+   pre-CDC-cutover history directly; Power BI's composite model UNIONs it with Gold-sourced
+   hot data. Compute for the cold path runs entirely on Teradata, never pulled through
+   Databricks.
 
 ## Idempotency & rerun semantics
 - Identity key: `customer_id` via `dim_customer_xwalk` for cross-source dedup at Gold; per-source

@@ -1,18 +1,24 @@
 # banking-multisource-lakehouse — PROJECT STATUS (resume-safe checkpoint)
 
 ## ▶ RESUME HERE (read this first)
-**All of Fasa 0 → D is built** (governance kit, 5-source seeding, Landing extractors + CDC,
-promotion gate, Silver transforms, Gold star schema + all 10 BQ marts + UC RBAC grants). All
-four bootstrap gates are green. Full self-audit: `BUILD_REPORT.md`.
+**Fasa 0 → D is built** (governance kit, 5-source seeding, Landing extractors + CDC, promotion
+gate, Silver transforms, Gold star schema + all 10 BQ marts + UC RBAC grants). All four
+bootstrap gates are green. Full self-audit: `BUILD_REPORT.md`.
 
-**The single biggest remaining gap: nothing has been RUN.** No dataset downloaded, no Docker
-container started, no Spark session executed, no live DB/cloud connection made — per owner
-instruction, this entire build happened as code-only in the planning session. Every mart,
-extractor, and gate is `py_compile`-clean and reviewed, but UNVERIFIED against live data. The
-next session (in the owner's dedicated Codespace) should: provision SAP HANA Cloud + Teradata,
-supply Kaggle credentials (or accept UCI-only partial data), run `make seed-all`, run the
-extractors, run `pipeline/silver/build_silver.py` and each `pipeline/gold/*.py`, and capture
-real query output into `journey/08_SERVING_AND_EVIDENCE.md`.
+**2026-07-06 (second architecture round, same day) — `ADR-007`**: owner asked for the pipeline
+to look decoupled/fault-isolated like a real bank's estate (many small pipelines per layer, not
+one script) and raised 3 historical-data problems (initial-load-vs-incremental, partition
+pruning, hot/cold economics). Resulted in: `ADR-007` (Silver splits into 5 domain pipelines,
+config-driven orchestrator, partitioning fix, explicit full-backfill flag) + `ADR-006` Addendum
+#1 (Teradata dual-role — CDC source AND a native cold-tier SQL view Power BI DirectQueries,
+bypassing the medallion for pre-cutover AGGREGATE-ONLY history). Also surfaced a real gap
+(**R-40**): the CDC extractors never capture the seed-time bulk load (triggers only fire on
+CHANGES after install) — needs an initial-snapshot extraction step. **None of ADR-007's 7 tasks
+are implemented yet** — full task list + gate bar: `NEXT_BUILD_KICKOFF.md`. This is the next
+session's job (in the owner's dedicated Codespace), same "code first, run later" split as
+before: provision SAP HANA Cloud + Teradata, supply Kaggle credentials (or accept UCI-only
+partial data), implement `NEXT_BUILD_KICKOFF.md`'s 7 items, THEN run everything for real and
+capture output into `journey/08_SERVING_AND_EVIDENCE.md`.
 
 Original blocker (still relevant context): this build environment has no Kaggle API
 credentials and no live AWS/Databricks/Snowflake credentials, so Home Credit/PaySim/Berka

@@ -129,4 +129,25 @@ R-01…R-35; tracked here since this ADR is this repo's own divergence from that
   `BUILD_REPORT.md`).
 
 ## Addendum log
-None yet.
+- **2026-07-06 (Addendum #1) — Teradata dual-role (CDC source + native cold-tier view).**
+  Owner clarified during a follow-on design discussion: Teradata now plays TWO roles, not
+  one. (a) The role this ADR already defines — a CDC-poll source feeding the medallion for
+  data AFTER the CDC cutover (when `setup_cdc()`'s triggers were installed, `seed/common/
+  cdc_ddl.py`). (b) A NEW second role — a **live cold-tier**: rows dated BEFORE the CDC
+  cutover are never pulled into Landing/Bronze/Silver/Gold at all. Instead, a native SQL
+  VIEW is created directly on Teradata (aggregated grain only — e.g. weekly counts by
+  job/education, no `customer_id`, no row-level PII) and the serving layer (Power BI
+  composite model, Fasa E) queries it via DirectQuery, UNIONed with the Gold-sourced hot
+  data at report time. Compute for this cold path runs entirely on Teradata; nothing is
+  pulled through Databricks for it.
+  - **Why aggregate-only is the hard rule, not a style choice**: row-level cold data would
+    bypass D-07 masking and D-04 MDM resolution (no `customer_id` link without going
+    through the crosswalk) — aggregating away individual rows removes the PII/identity
+    surface entirely, which is what makes skipping the medallion safe here. A row-level
+    DirectQuery to Teradata would be a real governance violation (R-27-shaped) and is
+    explicitly rejected.
+  - **This does not change D6.1's dataset/source count** — still 5 sources. It adds a
+    SECOND consumption path for source #5 specifically, documented so a future reader
+    doesn't assume Teradata is CDC-only.
+  - Full design + the cutover/aggregation rule: `journey/07_PIPELINE_SPEC.md` "Cold-tier
+    query path (Teradata dual-role)"; SQL view: pipeline/gold/cold_tier/teradata_cold_view.sql.
