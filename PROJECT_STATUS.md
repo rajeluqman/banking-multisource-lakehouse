@@ -1,13 +1,22 @@
 # banking-multisource-lakehouse — PROJECT STATUS (resume-safe checkpoint)
 
 ## ▶ RESUME HERE (read this first)
-**Fasa 0 → D is built, and ADR-007's 7-task build is now ALSO code-complete** (2026-07-06,
-third session same day). All four gates + the full unit-test suite are green — see
-`BUILD_REPORT.md` §"ADR-007 build (2026-07-06)" for the per-task evidence. **Nothing has been
-run against live infrastructure yet** (no Spark, no live DB/cloud connections — owner
-instruction, this is still the shared planning Codespace) — that is the next session's job, in
-the owner's dedicated Codespace: provision SAP HANA Cloud + Teradata, supply Kaggle credentials
-(or accept UCI-only partial data), run Fasa A → D for real plus the newly-built orchestrator,
+**Fasa 0 → D is built, ADR-007's 7-task build is code-complete, AND the verifying-architect
+review round is closed** (2026-07-06, fourth session same day). The architect review (ULTIMATE
+VETO) found one real defect — `orchestrate.py` read `cadence` off each stage but never acted
+on it, so a continuous CDC poller and a once-nightly batch job were treated identically,
+exactly what ADR-007 D7.3 said must not happen. **Fixed**: `orchestrate.py` now supports
+`--poll-seconds N`, which re-runs only `cdc_poll`/`on_upstream` stages on each tick while
+`batch`-cadence extraction stages stay one-shot — verified both against the real
+`orchestrate_config.yml` (topological order preserved after filtering) and via a mocked-module
+run (no live Spark/DB) proving the differentiated re-run counts. Full account:
+`governance/ADR/ADR-007-...md` Addendum #2, `BUILD_REPORT.md` §10. All four gates + the full
+unit-test suite are green after the fix — see `BUILD_REPORT.md` §"ADR-007 build (2026-07-06)"
+for the per-task evidence. **Nothing has been run against live infrastructure yet** (no Spark,
+no live DB/cloud connections — owner instruction, this is still the shared planning Codespace)
+— that is the next session's job, in the owner's dedicated Codespace: provision SAP HANA Cloud
++ Teradata, supply Kaggle credentials (or accept UCI-only partial data), run Fasa A → D for
+real plus the orchestrator (including a real `--poll-seconds` run against live CDC pollers),
 THEN capture real output into `journey/08_SERVING_AND_EVIDENCE.md`.
 
 One follow-on gap surfaced by this session's R-40 work, not part of ADR-007's task list and
@@ -116,3 +125,15 @@ details, never pasted into chat).
   four gates + `python3 -m unittest discover tests` (7/7) green; every touched/new `.py` file
   py_compile-clean. One follow-on gap surfaced and documented above (initial-snapshot Bronze
   data not yet UNIONed into Silver) rather than silently expanded into this session's scope.
+- 2026-07-06 (fourth session, same day) — verifying-architect review (ULTIMATE VETO): ran the
+  actual gate bar rather than trusting the prior session's claim (confirmed green), traced
+  R-40/partitioning/full-backfill/cold-tier view against ground truth (all confirmed correct),
+  and caught one real defect — `orchestrate.py` never used the `cadence` field it read from
+  `orchestrate_config.yml`, so every stage ran identically regardless of batch/cdc_poll/
+  on_upstream, contradicting ADR-007 D7.3's stated reason for the field existing. **Fixed same
+  session**: `orchestrate.py` gained `--poll-seconds N` (only `cdc_poll`/`on_upstream` stages
+  re-run per tick, `batch` stages stay one-shot) — verified against the real config (order
+  preserved after cadence filtering) and via a mocked-module run (differentiated re-run counts
+  confirmed: batch=1, cdc_poll=3, on_upstream-dependent=3 across 1 pass + 2 ticks). All four
+  gates + unit tests re-confirmed green after the fix. Full account: `governance/ADR/ADR-007-
+  ...md` Addendum #2, `BUILD_REPORT.md` §10.

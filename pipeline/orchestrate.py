@@ -21,14 +21,26 @@ Not executed against a live pipeline this session (no Spark/cloud connection her
 owner instruction) — written and py_compile-checked; live-run verification is pending the
 dedicated Codespace (BUILD_REPORT.md).
 
+Cadence is not just a label: a plain single pass runs every stage once regardless of
+`cadence` (fine for `batch` — nightly-cadence extraction genuinely only needs to run once
+per invocation). `--poll-seconds N` makes the distinction ADR-007 D7.3 actually asks for —
+after the first full pass, only `cdc_poll` and `on_upstream` stages re-run on each tick;
+`batch`-cadence extraction stages are NOT re-run (a real nightly batch pull is triggered by
+the next invocation, e.g. an external cron, not by this process looping). This keeps a
+continuous CDC poller from being treated the same as a once-nightly batch job, without this
+repo growing a private Airflow-shaped always-on scheduler for every stage (D-10) — only the
+`cdc_poll` stages and their downstream dependents get the interval behavior.
+
 Run:  python pipeline/orchestrate.py [--config pipeline/orchestrate_config.yml]
                                       [--only STAGE [STAGE ...]]
+                                      [--poll-seconds N [--max-iterations N]]
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import time
 from pathlib import Path
 
 import yaml
@@ -101,19 +113,12 @@ def run_stage(stage: dict) -> bool:
         return False
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    ap.add_argument("--only", nargs="+", default=None,
-                     help="run only these stage(s) plus their transitive dependencies")
-    args = ap.parse_args()
-
-    stages = load_stages(args.config)
-    ordered = topological_order(stages)
-    if args.only:
-        wanted = _closure(args.only, stages)
-        ordered = [s for s in ordered if s["name"] in wanted]
-
+def _run_pass(ordered: list[dict]) -> int:
+    """Runs `ordered` once, top to bottom, skipping any stage whose `depends_on` includes a
+    stage that failed WITHIN THIS PASS. A stage absent from `ordered` (e.g. a batch-cadence
+    extractor skipped on a poll tick, see `main()`) is neither "failed" nor "skipped" for
+    this purpose — its dependents proceed as if it simply wasn't due to run this tick, which
+    is the correct semantic for cadence-based filtering, not a real upstream failure."""
     failed: set[str] = set()
     for stage in ordered:
         blocking = [dep for dep in stage["depends_on"] if dep in failed]
@@ -130,6 +135,44 @@ def main() -> int:
     if failed:
         print(f"\norchestrate.py: {len(failed)} stage(s) failed or were skipped: {sorted(failed)}")
     return 1 if failed else 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    ap.add_argument("--only", nargs="+", default=None,
+                     help="run only these stage(s) plus their transitive dependencies")
+    ap.add_argument("--poll-seconds", type=int, default=None,
+                     help="after the first full pass, keep re-running every cdc_poll/"
+                          "on_upstream stage every N seconds (ADR-007 D7.3 cadence). "
+                          "batch-cadence extraction stages are NOT re-run by this loop — "
+                          "omit this flag entirely for the plain one-shot pass (e.g. driven "
+                          "by an external nightly cron for the batch-cadence sources).")
+    ap.add_argument("--max-iterations", type=int, default=None,
+                     help="stop the --poll-seconds loop after this many ticks (dev/testing "
+                          "only; omit to poll indefinitely)")
+    args = ap.parse_args()
+
+    stages = load_stages(args.config)
+    ordered = topological_order(stages)
+    if args.only:
+        wanted = _closure(args.only, stages)
+        ordered = [s for s in ordered if s["name"] in wanted]
+
+    exit_code = _run_pass(ordered)
+    if args.poll_seconds is None:
+        return exit_code
+
+    poll_stages = [s for s in ordered if s["cadence"] != "batch"]
+    iteration = 1
+    while args.max_iterations is None or iteration <= args.max_iterations:
+        time.sleep(args.poll_seconds)
+        print(f"\n--- poll tick {iteration} (cdc_poll/on_upstream stages only — "
+              f"batch-cadence stages stay one-shot per ADR-007 D7.3) ---")
+        tick_exit_code = _run_pass(poll_stages)
+        exit_code = tick_exit_code or exit_code
+        iteration += 1
+    return exit_code
 
 
 if __name__ == "__main__":

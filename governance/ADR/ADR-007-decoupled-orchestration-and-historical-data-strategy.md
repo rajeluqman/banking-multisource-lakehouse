@@ -120,3 +120,17 @@ risk register (this repo's own additions, alongside R-36…R-39).
   BUILD_REPORT.md for the one follow-on gap this surfaced (the initial-snapshot Bronze table
   isn't yet UNIONed into silver_crm.py/silver_marketing.py's CDC-log read, since that wiring
   wasn't part of this ADR's task list).
+- **2026-07-06 (Addendum #2) — verifying-architect review found D7.3's cadence field was
+  decorative.** `orchestrate.py` read `cadence` off each stage into a dict and never looked
+  at it again — every stage (batch, cdc_poll, on_upstream alike) ran exactly once per
+  invocation, which is precisely "treats a continuous CDC poller the same as a once-nightly
+  batch job," the thing D7.3 said the orchestrator must NOT do. Fixed: `orchestrate.py`
+  gained `--poll-seconds N` — after the first full pass, only `cdc_poll`/`on_upstream` stages
+  re-run on each tick; `batch`-cadence extraction stages are deliberately NOT re-run by the
+  loop (a real nightly pull is triggered by the next external invocation, e.g. cron, not by
+  this process looping) — this still does not grow a private always-on Airflow-shaped
+  scheduler for every stage (D-10), only `cdc_poll` stages and their dependents get interval
+  behavior. Verified with a mocked-module test (no live Spark/DB needed): a fake `batch`
+  stage ran once across 1 full pass + 2 poll ticks, a fake `cdc_poll` stage ran 3 times, and
+  a fake `on_upstream` stage depending on both ran 3 times without being falsely blocked by
+  the batch stage's absence on tick passes.

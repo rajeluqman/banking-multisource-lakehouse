@@ -171,7 +171,7 @@ session, same split as every prior fasa). Per-task evidence:
 |---|---|---|---|
 | 1 | R-40 initial-snapshot extractor | `pipeline/extract/cdc_initial_snapshot.py`, wired into `seed/sap_hana/load_berka.py` + `seed/teradata/load_bank_marketing.py` | code done; **smoke-tested this session** with a synthetic pandas fixture (local disk only, no live DB) — parquet + manifest + `_SUCCESS` written correctly, second call correctly returned `None` via the idempotency watermark guard |
 | 2 | Silver split into 5 domain pipelines | `pipeline/silver/silver_{sales,fraud,crm,marketing,core_banking}.py`; `build_silver.py` deleted; shared helpers (`build_simple_table`, `latest_state_from_cdc_log`) moved into `pipeline/silver/common.py` per ADR-007's "shared helpers stay shared" rule | code done, UNVERIFIED live |
-| 3 | Config-driven orchestrator | `pipeline/orchestrate_config.yml` + `pipeline/orchestrate.py` (Kahn's-algorithm topological sort, `--only` for a targeted + its transitive deps) | code done, UNVERIFIED live. The yml's `depends_on` graph is the REAL per-file dependency graph (derived by reading every Gold builder's actual `layer_path()` reads this session), not the ADR's simplified `[silver] -> [6 dims/facts] -> [9 marts]` block-diagram — e.g. `dim_customer_xwalk`/`dim_date` load from a seed-time CSV / self-contained calendar range and have NO upstream pipeline-stage dependency, which the block-diagram would have gotten wrong. Also required giving `pipeline/promote/promotion_gate.py` a `main()` (it had none before — it was a library of functions called with explicit args, not a standalone runnable stage), since ADR-007 D7.3's graph names it as one node |
+| 3 | Config-driven orchestrator | `pipeline/orchestrate_config.yml` + `pipeline/orchestrate.py` (Kahn's-algorithm topological sort, `--only` for a targeted + its transitive deps, `--poll-seconds` for cadence-differentiated re-runs — added in the verify round, see below) | code done, UNVERIFIED live. The yml's `depends_on` graph is the REAL per-file dependency graph (derived by reading every Gold builder's actual `layer_path()` reads this session), not the ADR's simplified `[silver] -> [6 dims/facts] -> [9 marts]` block-diagram — e.g. `dim_customer_xwalk`/`dim_date` load from a seed-time CSV / self-contained calendar range and have NO upstream pipeline-stage dependency, which the block-diagram would have gotten wrong. Also required giving `pipeline/promote/promotion_gate.py` a `main()` (it had none before — it was a library of functions called with explicit args, not a standalone runnable stage), since ADR-007 D7.3's graph names it as one node |
 | 4 | `mart_pipeline_health.py` reads orchestrator run-status | `pipeline/common/watermark.py` gained `write_run_status`/`read_run_status` (same control-plane store, new `_control/run_status/<stage>.json` key shape); `mart_pipeline_health.py` adds `orchestrator_stage`/`orchestrator_status`/`orchestrator_error` columns, additive only — existing row-count reconciliation logic untouched | code done, UNVERIFIED live |
 | 5 | Partitioning fix | `.partitionBy("txn_year", "txn_month")` on `fact_txn.py`/`fact_card_fraud.py`, columns derived via `year()`/`month()` on `txn_ts` before write | code done, UNVERIFIED live |
 | 6 | `--full-backfill` flag | `postgres_extract.py`/`mssql_extract.py`; `jdbc_batch_common.extract_table()` gained a `full_backfill` param that forces `last_watermark = None` regardless of stored state | code done, UNVERIFIED live. Deliberately parsed ONLY in each script's `__main__` guard, not inside `main()` — `main()` keeps a zero-arg signature so `pipeline/orchestrate.py`'s in-process `module.main()` calls can't accidentally have the orchestrator's own `sys.argv` parsed by the stage's argparse |
@@ -182,6 +182,23 @@ initial-snapshot data lands in Bronze as a plain (non-`_cdc`) batch-shaped table
 `silver_crm.py`/`silver_marketing.py` still only read the `_cdc` op-log Bronze tables (this
 was true of the pre-ADR-007 code too — not a regression). Wiring the UNION is a follow-up, not
 part of `NEXT_BUILD_KICKOFF.md`'s 7 items.
+
+**Verifying-architect review (2026-07-06, same day) found one real defect in task 3, since
+fixed** — see `governance/ADR/ADR-007-...md` Addendum #2 for the full account. `cadence`
+(`batch`/`cdc_poll`/`on_upstream`) was read from the yml into each stage dict but
+`orchestrate.py` never referenced it again — every stage ran exactly once per invocation
+regardless of cadence, which is the literal thing D7.3 said the orchestrator must not do
+("doesn't treat a continuous CDC poller the same as a once-nightly batch job"). Confirmed by
+`grep -c cadence pipeline/orchestrate.py` finding zero hits outside comments/docstrings
+before the fix. **Fixed**: `orchestrate.py` gained `--poll-seconds N` — after the first full
+pass, only `cdc_poll`/`on_upstream` stages re-run on each tick, `batch`-cadence extraction
+stages are not re-run by the loop. Verified two ways: (a) a pure-Python check against the
+real `orchestrate_config.yml` confirming the 3 batch-cadence stages
+(`postgres_extract`/`mssql_extract`/`obp_client`) are excluded from `poll_stages` while
+topological order is preserved; (b) a mocked-module run (no live Spark/DB) proving a fake
+`batch` stage ran once across 1 full pass + 2 poll ticks while a fake `cdc_poll` stage ran 3
+times and a fake `on_upstream` dependent of both ran 3 times without being falsely blocked.
+All four gates + unit tests re-run green after the fix.
 
 **Gate run (this session, after all 7 tasks)**:
 ```
