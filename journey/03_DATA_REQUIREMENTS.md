@@ -60,7 +60,7 @@
   fraction) gets a campaign-response row — true for the full Home Credit population (~307K), needs
   re-checking if the dev-loop's sample-set subset (D-14) is small enough to make this coverage
   thin; not yet verified against an actual seeded subset size.
-- SAP HANA Cloud / Teradata Free Tier instances are assumed reachable over the internet (endpoint
-  exposure enabled, per R-39) once the owner provisions them — **not yet provisioned/verified this
-  session**; all SAP HANA/Teradata code is written against this assumption and is UNVERIFIED
+- Salesforce (a Developer/trial org, a public SaaS endpoint — R-39 does not apply) and Teradata
+  (Free Tier, reachable over the internet per R-39) are assumed reachable once the owner provisions them — **not yet provisioned/verified this
+  session**; all Salesforce/Teradata code is written against this assumption and is UNVERIFIED
   against a live instance until the owner supplies connection details.

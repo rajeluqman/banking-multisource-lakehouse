@@ -29,7 +29,7 @@
 "Built, UNVERIFIED" means: py_compile-clean, reviewed, matches the STTM/data-model contract,
 but never executed against real Bronze/Silver data (no Spark, no live DB connections, no cloud
 in this planning session — owner instruction). Running each mart + capturing real output is the
-next action once the owner's dedicated Codespace has live Postgres/MSSQL/SAP HANA/Teradata/OBP
+next action once the owner's dedicated Codespace has live Postgres/MSSQL/Salesforce/Teradata/OBP
 data flowing through Fasa A-C.
 
 ## Proven vs claimed (the Volve lesson)

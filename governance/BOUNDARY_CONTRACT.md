@@ -7,7 +7,7 @@
 | Layer | Storage | Compute/engine | Sanctioned surface |
 |---|---|---|---|
 | Landing/Bronze/Silver/Gold | S3 `s3://<bucket>/banking/` (local-disk fallback for dev) | Databricks portable PySpark + Delta | `pipeline/`, `seed/` |
-| Sources: SAP HANA Cloud (BTP Free Tier), Teradata (ADR-006) | Owner-provisioned cloud instances, hosting Berka / UCI Bank Marketing | `hdbcli` / Teradata driver, CDC-poll (trigger + change-table, D6.3) | seed/sap_hana/, seed/teradata/, pipeline/extract/sap_hana_extract.py, pipeline/extract/teradata_extract.py, pipeline/extract/cdc_common.py |
+| Sources: Salesforce (Developer Edition, CRM — ADR-006 Add #2), Teradata (ADR-006) | Owner-provisioned; Salesforce hosts Berka (Bulk API 2.0 + `SystemModstamp` incremental), Teradata hosts UCI Bank Marketing (CDC-poll trigger + change-table, D6.3) | Salesforce Bulk API 2.0 client / Teradata driver | seed/salesforce/, seed/teradata/, pipeline/extract/salesforce_extract.py, pipeline/extract/teradata_extract.py, pipeline/extract/cdc_common.py (Teradata only) |
 | Serving (Fasa E, optional) | Gold S3 prefix, read-only | Snowflake external tables (or DuckDB $0 fallback) | Fasa E serving scripts only |
 | Governance | Unity Catalog over the S3 external locations | — | RBAC grants (`journey/09_SECURITY_AND_ACCESS.md` §3), lineage, audit |
 
@@ -28,9 +28,10 @@ Full alternatives-considered discussion: `governance/ADR/ADR-002-ratified-stack.
 
 ## Ingestion allowlist
 Only these ingestion mechanisms are sanctioned: psycopg2/sqlalchemy watermark extractor
-(PostgreSQL), pyodbc/sqlalchemy watermark extractor (MS SQL Server), `hdbcli` CDC-poll extractor
-(SAP HANA Cloud, ADR-006 — trigger/change-table pattern only, NOT SAP SLT/SDI), Teradata CDC-poll
-extractor (ADR-006 — same pattern, NOT QueryGrid), Open Bank Project sandbox REST API client, BNM
+(PostgreSQL), pyodbc/sqlalchemy watermark extractor (MS SQL Server), Salesforce Bulk API 2.0
+client (Salesforce Developer Edition CRM, ADR-006 Add #2 — `SystemModstamp` watermark incremental,
+NOT Pub/Sub CDC / Airbyte / federated direct-query), Teradata CDC-poll
+extractor (ADR-006 — trigger/change-table pattern, NOT QueryGrid), Open Bank Project sandbox REST API client, BNM
 OpenAPI (optional FX enrich only). Anything else (Fivetran/Airbyte/a new connector, or platform-
 native replication middleware) requires an ADR before adoption.
 

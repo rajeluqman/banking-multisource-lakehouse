@@ -1,66 +1,76 @@
-# Next Build Kickoff — decoupled orchestration + historical-data strategy
+# Next Build Kickoff — Salesforce CRM swap (source #4) + Fasa A→D live
 
-> Paste-able kickoff for a fresh Sonnet session (this repo's dedicated Codespace). Architecture
-> for this round is DECIDED and gated green — this doc is execution only. Do NOT re-litigate
-> `ADR-006`/`ADR-007`; if something in them looks wrong once you're reading real code, STOP and
-> surface it, don't silently improvise (this repo's CLAUDE.md anti-shortcut rule).
+> Paste-able kickoff for a fresh **Sonnet** session in the owner's dedicated Codespace.
+> The ARCHITECTURE + DESIGN + SCOPE for this round are DECIDED and gated green — this doc is
+> EXECUTION (code) only. Do NOT re-litigate `ADR-006` Addendum #2 or the ingest-not-federate
+> ruling; if something in the docs looks wrong once you're reading real code, STOP and surface it,
+> don't silently improvise (this repo's CLAUDE.md anti-shortcut rule).
+
+## What changed and why (one paragraph)
+Source #4 moved from SAP HANA Cloud → **Salesforce** (Developer Edition). It's still the "CRM"
+role; **Berka is still the seeded data + golden-record keystone** (ADR-005 L26) — only the host
+and extractor change. Ingestion is **Salesforce Bulk API 2.0 + `SystemModstamp` watermark
+incremental INTO the medallion** (Landing→Bronze→Silver→Gold) — NOT federated direct-query (a
+verified anti-pattern), NOT Pub/Sub CDC, NOT Airbyte. Teradata (source #5) is UNCHANGED (keeps its
+hand-built trigger `_cdc_log` CDC + cold-tier). BQ-03's old synthetic CRM-ticket proxy is replaced
+by a real Salesforce **Case** timestamp.
 
 ## Read first, in this order
-1. `governance/ADR/ADR-007-decoupled-orchestration-and-historical-data-strategy.md` — the design.
-2. `governance/ADR/ADR-006-real-sap-hana-teradata-cdc-showcase.md` Addendum #1 — Teradata dual-role.
-3. `journey/07_PIPELINE_SPEC.md` "Orchestration" + "Historical-data strategies" sections.
-4. `BUILD_REPORT.md` — what's already built and what's UNVERIFIED (nothing here has been run
-   against live data yet — no assumption of a working Bronze/Silver should be made blind).
+1. `governance/ADR/ADR-006-real-sap-hana-teradata-cdc-showcase.md` **Addendum #2** — the swap, the
+   source-key rename decision, and the scope rulings.
+2. `journey/01_DATASET_AND_SOURCES.md` (source #4 rows), `journey/05_STTM.md` (Berka→Salesforce
+   object mapping + new `sil_crm_case`), `journey/07_PIPELINE_SPEC.md` (Bulk API mechanism,
+   prerequisites), `journey/09_SECURITY_AND_ACCESS.md` (`birth_number__c` masking).
+3. `governance/BOUNDARY_CONTRACT.md` (sanctioned ingestion = Salesforce Bulk API 2.0 client).
+4. `BUILD_REPORT.md` — what's already built and what's UNVERIFIED. Nothing here has run against a
+   live Salesforce org yet — do not assume a working Bronze/Silver blind.
 
-## Task list (in dependency order — each item cites the ADR section that governs it)
+## Prerequisite (owner, before live run)
+Salesforce Dev Edition provisioned + a Connected App (OAuth) + security token; `.env` filled with
+`SALESFORCE_LOGIN_URL / CLIENT_ID / CLIENT_SECRET / USERNAME / PASSWORD / SECURITY_TOKEN` (see
+`.env.example`). If not yet provisioned, build against the dev-loop fallback and mark the relevant
+`BUILD_REPORT.md` rows UNVERIFIED — do not fake a live-run proof.
 
-1. **R-40 fix (ADR-007 D7.5) — initial-snapshot extractor for CDC sources.**
-   Add a one-time full-read extraction to `seed/sap_hana/load_berka.py` and
-   `seed/teradata/load_bank_marketing.py` (or a new `pipeline/extract/cdc_initial_snapshot.py`
-   shared by both) that lands the just-seeded bulk data into Landing (same manifest/`_SUCCESS`
-   shape as everything else) BEFORE the CDC pollers start. Without this, the seed data never
-   reaches Bronze via the CDC path at all — confirm this by reading `pipeline/extract/
-   cdc_common.py`'s `poll_cdc_log` and seeing it only reads `_cdc_log`, never the base table.
+## Task list (dependency order — each cites the governing doc)
 
-2. **Split `pipeline/silver/build_silver.py` into 5 domain pipelines (ADR-007 D7.1).**
-   Create `silver_sales.py`, `silver_fraud.py`, `silver_crm.py`, `silver_marketing.py`,
-   `silver_core_banking.py` — move the existing builder functions (`build_sil_application`,
-   `build_sil_bureau`, `build_sil_card_txn`, `build_sil_client`, `build_sil_campaign_response`,
-   the `SIMPLE_TABLES` passthrough loop) into the matching domain file. Shared helpers
-   (`pipeline/silver/common.py`, `pipeline/silver/birth_number_decode.py`) stay shared — do NOT
-   duplicate them per file. Delete `build_silver.py` once all builders have a new home; update
-   any doc still referencing it by name (`gates/doc_reference_contract.py` will catch a miss).
+1. **Rename internal source key `sap_hana` → `salesforce` (ADR-006 Add #2 "Internal
+   source-identifier key").** One mechanical pass across ALL ~12 files so Bronze path segments,
+   watermark keys, and the health-mart source→silver map stay consistent:
+   `pipeline/silver/silver_crm.py`, `pipeline/promote/promotion_gate.py`,
+   `pipeline/gold/mart_pipeline_health.py`, `pipeline/gold/dim_customer.py`,
+   `pipeline/orchestrate_config.yml`, `drip_feed.py`, and the comment-only refs in
+   `pipeline/extract/{cdc_common,cdc_initial_snapshot,teradata_extract}.py`, `seed/common/cdc_ddl.py`.
+   `grep -rn "sap_hana" .` must return zero live-code hits when done (docs/history excepted).
 
-3. **Config-driven orchestrator (ADR-007 D7.3).**
-   Write `pipeline/orchestrate_config.yml` (dependency graph + per-source cadence: `batch` vs
-   `cdc_poll` — see ADR-007 for the exact graph) and `pipeline/orchestrate.py` (reads the
-   config, runs each stage after its upstream succeeds, writes a run-status row into the same
-   control-plane store `pipeline/common/watermark.py` already uses). Follow the
-   `gates/framework.yml` precedent: the script reads config, never hardcodes the DAG shape.
+2. **Seed loader — `seed/salesforce/load_berka.py` (replaces `seed/sap_hana/load_berka.py`).**
+   Load Berka CSVs into Salesforce standard objects via Bulk API 2.0: `client`→**Contact**
+   (with `birth_number__c`, `berka_client_id__c` external-id custom fields), `account`→**Account**,
+   `disp`→**AccountContactRelation** (native N:N — keep bridge-not-CTE), CRM tickets→**Case**.
+   Deterministic MDM linkage (Berka has a real master): `customer_id` → `dim_customer_xwalk.
+   berka_client_id` ↔ Contact `berka_client_id__c`. DELETE the old `seed/sap_hana/` after.
 
-4. **`mart_pipeline_health.py` reads orchestrator run-status too (additive).**
-   Extend the existing row-count reconciliation query to also surface the latest run-status
-   per stage from step 3's control-plane store. Do not change the existing reconciliation logic.
+3. **Extractor — `pipeline/extract/salesforce_extract.py` (replaces `sap_hana_extract.py`).**
+   Bulk API 2.0 job lifecycle (create query job → poll status → download CSV results) with a
+   `SystemModstamp` high-watermark for incremental pulls, landing into Landing with the same
+   manifest/`_SUCCESS` shape as every other source. Idempotent re-run (journey/07). DELETE the old
+   `sap_hana_extract.py`. `cdc_common.py`/`cdc_initial_snapshot.py` now serve **Teradata only** —
+   update their docstrings.
 
-5. **Partitioning fix (ADR-007 D7.4 Strategy 2).**
-   Add `.partitionBy("txn_year", "txn_month")` to `pipeline/gold/fact_txn.py` and
-   `fact_card_fraud.py` (derive the two columns from `txn_ts` via `year()`/`month()` before
-   write). This is a real gap, not optional polish — confirm via `git log`/reading the current
-   file that these writes are unpartitioned today.
+4. **Silver — update `pipeline/silver/silver_crm.py` + add `sil_crm_case`.** Read the Salesforce
+   Bronze (source key `salesforce`); keep `birth_number` decode (now from Contact
+   `birth_number__c`), D-07 masking unchanged. Add the new `sil_crm_case` transform per the STTM
+   in `journey/05_STTM.md` — this feeds BQ-03 (`mart_fraud_followup`) with a real Case timestamp.
 
-6. **Explicit full-backfill flag (ADR-007 D7.4 Strategy 1).**
-   Add a `--full-backfill` CLI flag to `pipeline/extract/postgres_extract.py` and
-   `mssql_extract.py` that forces the full-pull branch in `jdbc_batch_common.py`'s
-   `extract_table` regardless of existing watermark state (read, don't guess, the current
-   watermark-or-full-pull logic before changing it).
+5. **Orchestration — `pipeline/orchestrate_config.yml`.** Replace the `sap_hana_extract` stage with
+   `salesforce_extract`; set source #4 cadence per `journey/07` (`bulk_api_poll`, not `cdc_poll`).
+   Update `drip_feed.py`: Salesforce change-simulation is record edits via the API, NOT a SQL
+   trigger — adjust or note why source #4 drips differently from Teradata.
 
-7. **Teradata cold-tier SQL view (ADR-006 Addendum #1).**
-   Write `pipeline/gold/cold_tier/teradata_cold_view.sql` — a native Teradata `CREATE VIEW`,
-   AGGREGATE GRAIN ONLY (no `customer_id`, no row-level PII — this is a hard rule, not a style
-   choice, see the ADR for why), filtering to rows dated before the CDC cutover. Document the
-   cutover-date parameter clearly (it's per-deployment, not a constant).
+6. **Health mart — `pipeline/gold/mart_pipeline_health.py`.** Ensure the `salesforce`→`silver_crm`
+   source map and watermark-key logic are correct after the rename (BQ-10 reconciliation must still
+   hold).
 
-## Gate before calling any of this done
+## Gate before calling ANY of this done
 ```
 python3 gates/journey_completeness.py
 python3 gates/boundary_contract.py
@@ -68,11 +78,9 @@ python3 gates/doc_reference_contract.py
 python3 gates/secrets_scan.py
 python3 -m unittest discover tests
 ```
-All four gates green + all unit tests passing is the bar — not "I wrote the files." If you can
-run this against live Postgres/MSSQL/SAP HANA/Teradata in this Codespace, do so and capture real
-output into `journey/08_SERVING_AND_EVIDENCE.md`; if you can't (no credentials yet), say so
-explicitly and mark the relevant `BUILD_REPORT.md` rows UNVERIFIED — do not claim a live-run
-proof you didn't actually produce.
+All four gates green + tests passing is the bar — not "I wrote the files." Run against a live
+Salesforce org if provisioned and capture real output into `journey/08_SERVING_AND_EVIDENCE.md`;
+if not, say so explicitly and mark `BUILD_REPORT.md` rows UNVERIFIED.
 
 ## Update before ending the session
-`PROJECT_STATUS.md` "▶ RESUME HERE" and `BUILD_REPORT.md` — same discipline as every prior fasa.
+`PROJECT_STATUS.md` "▶ RESUME HERE" + `BUILD_REPORT.md` — same discipline as every prior fasa.

@@ -15,11 +15,14 @@
 | customer_id | string | seed/build_xwalk.py | generated | bank-wide surrogate, generated once at seed (D-04) | No |
 | sk_id_curr | string | Postgres `application` | SK_ID_CURR | passthrough | Yes (not every customer has a loan) |
 | name_orig | string | MSSQL PaySim | nameOrig | passthrough | Yes |
-| berka_client_id | string | SAP HANA Cloud `client` (ADR-006) | client_id | passthrough | Yes |
+| berka_client_id | string | Salesforce Contact `berka_client_id__c` (ADR-006 Add #2) | berka_client_id__c | passthrough | Yes |
 | obp_account_id | string | OBP `/accounts` | account_id | passthrough | Yes |
 | source_priority_rank | int | derived | — | CRM=1, core=2, loans=3, cards=4 (ADR-005 survivorship order) | No |
 
-### Target: `silver.sil_client` (Berka CRM via SAP HANA Cloud, ADR-006 — golden-record source of DOB/gender)
+### Target: `silver.sil_client` (Berka CRM via Salesforce Contact, ADR-006 Add #2 — golden-record source of DOB/gender)
+> Source object is now Salesforce **Contact** (Berka seeded in, ADR-006 Add #2): `client_id` = Contact
+> `berka_client_id__c`, `birth_number` = Contact `birth_number__c`. Decode/masking rules below are
+> unchanged (journey/09 L34 still applies).
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
 |---|---|---|---|---|---|
 | client_id | string | Berka `client` | client_id | passthrough (PK) | No |
@@ -27,6 +30,14 @@
 | gender | string | Berka `client` | birth_number | 'F' if original MM > 50 else 'M' — derived in the SAME decode step as birth_date, unit-tested with known fixtures (see tests/test_birth_number_decode.py) | No |
 | birth_number_raw | — | Berka `client` | birth_number | **DROPPED after decode** (D-07) — never stored in Silver/Gold | N/A |
 | district_id | string | Berka `client` | district_id | passthrough, FK to `sil_district` | Yes (R-03 orphan check) |
+
+### Target: `silver.sil_crm_case` (Salesforce Case — CRM ticket, ADR-006 Add #2, BQ-03 enrichment)
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| case_id | string | Salesforce `Case` | Id | passthrough (PK) | No |
+| customer_id | string | Salesforce `Case` | ContactId — Contact `berka_client_id__c` — xwalk | resolved to bank-wide customer_id via the xwalk `berka_client_id` link (deterministic — Berka has a real master, no synthetic assignment) | No |
+| opened_at | timestamp | Salesforce `Case` | CreatedDate | passthrough (UTC) — the real CRM-ticket timestamp BQ-03 previously lacked (journey/03 L8) | No |
+| case_type | string | Salesforce `Case` | Type | passthrough — filter to fraud-follow-up cases for BQ-03 | Yes |
 
 ### Target: `silver.sil_campaign_response` (Teradata — UCI Bank Marketing, ADR-006)
 | Target column | Type | Source | Source column | Transform rule | Nullable? |

@@ -14,7 +14,8 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `sil_bureau` | one row per bureau-reported credit line | External credit bureau record | Silver |
 | `sil_previous_application` | one row per prior loan application | Prior application | Silver |
 | `sil_card_txn` | one row per PaySim transaction | Card/mobile-money transaction | Silver |
-| `sil_client` / `sil_account` / `sil_disp` / `sil_card` / `sil_loan` / `sil_trans` / `sil_district` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product (now sourced from SAP HANA Cloud, ADR-006) | Silver |
+| `sil_client` / `sil_account` / `sil_disp` / `sil_card` / `sil_loan` / `sil_trans` / `sil_district` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product (now sourced from Salesforce standard objects — Account/Contact/AccountContactRelation, ADR-006 Add #2) | Silver |
+| `sil_crm_case` | one row per Salesforce Case (CRM ticket) | CRM support / fraud-follow-up ticket (ADR-006 Add #2 — resolves BQ-03's journey/03 L8 gap) | Silver |
 | `sil_obp_accounts` / `sil_obp_transactions` | one row per OBP account / transaction | Core banking account/transaction | Silver |
 | `sil_campaign_response` | one row per Teradata Bank Marketing record (post-xwalk-linkage) | Marketing/campaign response (ADR-006) | Silver |
 | `dim_customer` | one row per bank-wide `customer_id` (golden record) | Customer | Gold |
@@ -39,7 +40,9 @@ table is built; this table is the pre-build contract each file must match (check
 ## Clean-model doctrine (non-negotiable regardless of stack)
 - 1 table = 1 grain = 1 business entity — no mixed-domain dimensions.
 - Bridge tables (not CTEs) for N:N relationships — e.g. a customer-to-account bridge where Berka's
-  `disp` table already encodes disponent/owner N:N; reuse `disp`'s shape rather than re-deriving it.
+  `disp` table already encodes disponent/owner N:N; reuse `disp`'s shape rather than re-deriving it. In the Salesforce delivery (ADR-006 Add #2) this
+  same N:N rides the native `AccountContactRelation` object — a real bridge table, not a CTE,
+  keeping this doctrine intact end-to-end.
 - Serving layer = view, never a duplicated physical copy of Gold (Snowflake external tables in
   Fasa E read Gold S3 directly — no copy-in).
 - One isolated SCD strategy per table: **Type 1 (overwrite) for `dim_customer`** — survivorship
@@ -48,7 +51,11 @@ table is built; this table is the pre-build contract each file must match (check
   anywhere in v1** (named as deliberately out — see ADR-005 consequences).
 - What's deliberately OUT: any mart beyond the 10 BQs (see journey/02 "Explicitly out of
   scope"), real-time freshness SLAs, hard-delete-complete facts until the Fasa C CDC upgrade
-  (ADR-004).
+  (ADR-004). Also OUT (named, not silently absent, per this doctrine): **address-change history /
+  velocity** — Salesforce (ADR-006 Add #2) makes Contact/Account address changes observable, but the
+  correct model for it is a NEW append-only fact_address_change event fact (grain: one row per
+  observed address change per customer_id), NOT a Type 2 SCD on `dim_customer` (which stays Type 1);
+  that capability + fact are pending `@scope-guardian` ADR-000 intake, so no such table exists in v1.
 
 ## ERD / diagram
 No `.dbml`/graphical ERD in v1 — the grain-declarations table above plus the join paths named in

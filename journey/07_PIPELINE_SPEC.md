@@ -15,19 +15,20 @@ with Unity Catalog attached, evidence harvested into `journey/08_SERVING_AND_EVI
 
 **Source-side compute (ADR-006):** Postgres and MS SQL Server run as Docker containers wherever
 the pipeline is executed (owner's dedicated Codespace for actual runs, not the planning session).
-SAP HANA Cloud and Teradata are the owner's own provisioned cloud instances (BTP Free Tier /
-Vantage Express) — never spun up or connected to from the docs-authoring session; connection
+Salesforce (a Developer/trial org) and Teradata (Vantage Express / Teradata Cloud free tier)
+are the owner's own provisioned instances — never spun up or connected to from the docs-authoring session; connection
 details arrive via `.env` only when the owner is ready to run the extractor against them.
 
-## SAP HANA Cloud / Teradata prerequisites (owner action, before Fasa B can run live)
-1. Provision SAP HANA Cloud (BTP Free Tier) — enable internet-facing endpoint (R-39); note host,
-   port, instance id.
-2. Provision Teradata (Vantage Express or Teradata Cloud free tier) — same network-exposure check.
-3. `pip install hdbcli` (SAP HANA Python driver) + the Teradata Python driver in the environment
-   that will run seed/sap_hana/load_berka.py / seed/teradata/load_bank_marketing.py.
-4. Fill the SAP HANA / Teradata block in `.env` (never commit real values — see
+## Salesforce / Teradata prerequisites (owner action, before Fasa B can run live)
+1. Provision a Salesforce Developer/trial org — create an OAuth Connected App (enable Bulk API /
+   the `api`+`refresh_token` scopes); note consumer key/secret + refresh token. Salesforce is a
+   public SaaS endpoint — no network-exposure step; R-39 does not apply to source #4 (ADR-006 Add #2).
+2. Provision Teradata (Vantage Express or Teradata Cloud free tier) — network-exposure check (R-39).
+3. `pip install simple-salesforce` (or a Bulk API 2.0 client) + the Teradata Python driver in the
+   environment that will run seed/salesforce/load_berka.py / seed/teradata/load_bank_marketing.py.
+4. Fill the Salesforce (Connected App) / Teradata block in `.env` (never commit real values — see
    `journey/09_SECURITY_AND_ACCESS.md` §1).
-Until these are done, all SAP HANA/Teradata code in this repo is written but UNVERIFIED against a
+Until these are done, all Salesforce/Teradata code in this repo is written but UNVERIFIED against a
 live instance — tagged as such in `BUILD_REPORT.md`, not silently claimed as tested.
 
 ## Orchestration (ADR-007 — decoupled, config-driven)
@@ -41,7 +42,8 @@ contract (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md` in the planning wo
 that adoption is out of THIS repo's scope — `orchestrate.py` is the local dev-loop
 sequencer, not a competing scheduler.
 - Cadence per source (config-driven, not uniform): `batch` (Postgres/MSSQL — scheduled,
-  e.g. nightly) vs `cdc_poll` (SAP HANA/Teradata — short interval, e.g. every 5 min).
+  e.g. nightly) vs `cdc_poll` (Teradata — short interval, e.g. every 5 min) and `bulk_api_poll` (Salesforce —
+  Bulk API 2.0 `SystemModstamp` incremental, short interval; ADR-006 Add #2).
   `drip_feed.py` runs as a standalone interval loop simulating live source traffic between
   orchestrated runs.
 - Retry policy: extractors retry-with-backoff on transient failure (DB connection drop, OBP
@@ -71,8 +73,10 @@ sequencer, not a competing scheduler.
 - Identity key: `customer_id` via `dim_customer_xwalk` for cross-source dedup at Gold; per-source
   native PK (`SK_ID_CURR`, generated PaySim `txn_id`, Berka `client_id`/`account_id`, OBP
   `account_id`) for Bronze/Silver skip-existing and MERGE keys (`journey/04_DATA_MODEL.md`
-  identity section). SAP HANA/Teradata CDC extraction keys off `_cdc_log.seq` (a monotonic offset,
-  stored in the lake like the batch watermark) rather than a timestamp watermark (ADR-006 D6.3).
+  identity section). Teradata CDC extraction keys off `_cdc_log.seq` (a monotonic offset, stored in
+  the lake like the batch watermark); Salesforce (source #4) keys off the `SystemModstamp`
+  high-watermark via Bulk API 2.0 (ADR-006 Add #2) — the same watermarked-incremental shape as the
+  Postgres/MSSQL extractors.
 - Partial-failure rerun: safe to just re-run at every layer. Landing extraction re-runs the same
   watermark window (idempotent — a re-pulled row is deduped by PK+`updated_at` at the Silver
   MERGE, not at Landing). Bronze promotion re-checks the same manifest; an already-promoted

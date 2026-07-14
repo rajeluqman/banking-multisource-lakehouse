@@ -84,13 +84,13 @@ boundary:
   ingestion_allowlist:
     - "psycopg2 / sqlalchemy watermark extractor (PostgreSQL 'Sales / Loan Dept')"
     - "pyodbc / sqlalchemy watermark extractor (MS SQL Server 'Credit Card + Fraud')"
-    - "hdbcli CDC-poll extractor (SAP HANA Cloud 'Internal CRM', ADR-006 — trigger/change-table pattern, not SAP SLT/SDI)"
+    - "Salesforce Bulk API 2.0 client (Salesforce 'Internal CRM', ADR-006 Add #2 — SystemModstamp watermark incremental; not Pub/Sub CDC, not Airbyte, not federated direct-query)"
     - "Teradata CDC-poll extractor (ADR-006 — same trigger/change-table pattern, not QueryGrid)"
     - "Open Bank Project sandbox REST API client (OAuth/DirectLogin, paginated)"
     - "BNM OpenAPI (optional live FX enrich, never a build dependency — D-12)"
 
 identity:
-  grain_description: "bank-wide customer_id (dim_customer_xwalk, D-04) is the cross-source MDM identity; every Gold-layer customer-scoped row resolves to exactly one customer_id. Per-source native keys feed the crosswalk: SK_ID_CURR (Postgres/home-credit), nameOrig/nameDest (MSSQL/paysim), client_id+account_id (SAP-sim/Berka), OBP account_id (Open Bank Project)."
+  grain_description: "bank-wide customer_id (dim_customer_xwalk, D-04) is the cross-source MDM identity; every Gold-layer customer-scoped row resolves to exactly one customer_id. Per-source native keys feed the crosswalk: SK_ID_CURR (Postgres/home-credit), nameOrig/nameDest (MSSQL/paysim), client_id+account_id (Salesforce/Berka), OBP account_id (Open Bank Project)."
   key_columns:
     - "customer_id"
     - "SK_ID_CURR"

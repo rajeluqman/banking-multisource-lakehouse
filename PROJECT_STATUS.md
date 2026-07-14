@@ -1,6 +1,23 @@
 # banking-multisource-lakehouse — PROJECT STATUS (resume-safe checkpoint)
 
 ## ▶ RESUME HERE (read this first)
+
+**2026-07-14 — LATEST (front of queue): source #4 swapped SAP HANA Cloud → Salesforce**
+(Developer Edition; still the CRM role; Berka stays the seeded data + golden-record keystone,
+ADR-005 L26). Driver: SAP BTP signup blocked by a mobile-OTP wall; Salesforce Dev Edition is
+free/email-verified, the #1 CRM, and adds a genuinely new SaaS-API-ingestion skill. Ingestion =
+Salesforce **Bulk API 2.0 + `SystemModstamp` incremental** INTO the medallion (federated
+direct-query was verified an anti-pattern and rejected). BQ-03's CRM-ticket gap is now filled by
+Salesforce **Case** (enrichment, not an 11th BQ); scope-guardian sent two tempting use cases
+(address-velocity, complaint-pattern) to BACKLOG and accepted disciplined-payer cross-sell as
+BQ-05/06 enrichment. The `architect` agent was **merged into `staff-data-engineer`** (single top
+technical authority). Full design: `governance/ADR/ADR-006-...md` **Addendum #2**. **Architecture +
+design + scope are COMPLETE and all 4 gates green — the NEXT job is the BUILD (Fasa A→D live),
+see `NEXT_BUILD_KICKOFF.md`.** ⚠ Pipeline CODE still uses the internal source key `sap_hana` in
+~12 files — the build must rename it to `salesforce` (ADR-006 Add #2 "Internal source-identifier
+key"). Everything below this block predates the swap; where older entries say "SAP HANA", the
+current source #4 is Salesforce.
+
 **Fasa 0 → D is built, ADR-007's 7-task build is code-complete, AND the verifying-architect
 review round is closed** (2026-07-06, fourth session same day). The architect review (ULTIMATE
 VETO) found one real defect — `orchestrate.py` read `cadence` off each stage but never acted
@@ -14,8 +31,8 @@ run (no live Spark/DB) proving the differentiated re-run counts. Full account:
 unit-test suite are green after the fix — see `BUILD_REPORT.md` §"ADR-007 build (2026-07-06)"
 for the per-task evidence. **Nothing has been run against live infrastructure yet** (no Spark,
 no live DB/cloud connections — owner instruction, this is still the shared planning Codespace)
-— that is the next session's job, in the owner's dedicated Codespace: provision SAP HANA Cloud
-+ Teradata, supply Kaggle credentials (or accept UCI-only partial data), run Fasa A → D for
+— that is the next session's job, in the owner's dedicated Codespace: provision Salesforce
+(Developer Edition) + Teradata, supply Kaggle credentials (or accept UCI-only partial data), run Fasa A → D for
 real plus the orchestrator (including a real `--poll-seconds` run against live CDC pollers),
 THEN capture real output into `journey/08_SERVING_AND_EVIDENCE.md`.
 
@@ -26,6 +43,17 @@ batch-shaped table, but `pipeline/silver/silver_crm.py`/`silver_marketing.py` on
 `_cdc` op-log Bronze tables — so that snapshot data doesn't reach Silver/Gold yet. A future
 task should UNION the initial-snapshot Bronze table into those two domain pipelines' latest-
 state read.
+
+**2026-07-10 — R-41 named (documented only, not built, owner's explicit choice this session):**
+no Delta `OPTIMIZE`/Z-ORDER compaction step exists anywhere in the pipeline. The CDC-poll
+pattern (`pipeline/extract/cdc_common.py`, ADR-006 D6.3) plus the promotion gate's per-poll
+append to Bronze (`pipeline/promote/promotion_gate.py`) will accumulate many small Delta
+partitions over time — the classic small-files problem, slowing `pipeline/silver/common.py`'s
+MERGE reads and eventually Snowflake/DirectQuery reads over Gold. No new ADR needed to close
+this (Delta already supports `OPTIMIZE`/`ZORDER BY` natively per ADR-002) — just an unbuilt
+maintenance stage, likely a new `compact` cadence in `pipeline/orchestrate_config.yml`
+(ADR-007's stage model) when it's prioritized. Full detail: `journey/06_DQ_PLAN.md` "Known
+accepted quality gaps" table, R-41.
 
 **2026-07-06 (second architecture round, same day) — `ADR-007`**: owner asked for the pipeline
 to look decoupled/fault-isolated like a real bank's estate (many small pipelines per layer, not
@@ -82,13 +110,14 @@ details, never pasted into chat).
 
 ## Open decisions for owner
 - Provide Kaggle API credentials (`~/.kaggle/kaggle.json` or `KAGGLE_USERNAME`/`KAGGLE_KEY`) so
-  Fasa A can seed from the REAL Home Credit / PaySim CSVs (Berka now sources via SAP HANA Cloud,
+  Fasa A can seed from the REAL Home Credit / PaySim CSVs (Berka now sources via Salesforce,
   UCI Bank Marketing needs no auth), OR confirm a synthetic schema-accurate placeholder is
   acceptable for the dev-loop and defer real data to later.
-- Provision SAP HANA Cloud (BTP Free Tier) and Teradata (Vantage Express or Teradata Cloud free
-  tier), enable internet-facing endpoints, and supply connection details via `.env` — required
-  before Fasa B's CDC extractors can run live (code is written either way; live testing is
-  UNVERIFIED until then).
+- Provision Salesforce (Developer Edition — free, email-verified; set up a Connected App for
+  OAuth + reset the security token) and Teradata (Vantage Express or Teradata Cloud free tier),
+  and supply connection details via `.env` (`SALESFORCE_*`, `TERADATA_*`) — required before
+  Fasa B's extractors can run live (code is written either way; live testing is UNVERIFIED until
+  then).
 - Confirm the S3 bucket/prefix (`s3://<bucket>/banking/`) and whether AWS credentials will be
   supplied for a real S3-backed dev loop, or whether local-disk fallback is acceptable until the
   canonical Databricks-trial run.

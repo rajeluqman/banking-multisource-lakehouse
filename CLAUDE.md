@@ -21,7 +21,7 @@ lineage/identity question — you MUST:
    `python gates/boundary_contract.py`, `python gates/doc_reference_contract.py`,
    `python gates/secrets_scan.py` — these are the binding checks, not judgement.
 3. **If a rule and the request conflict, STOP and surface it** — cite the doc, ask
-   `@architect` / `@scope-guardian` before writing code. Do NOT re-litigate a locked decision
+   `@staff-data-engineer` / `@scope-guardian` before writing code. Do NOT re-litigate a locked decision
    (D-01…D-16 in the CIL planning lab) — if a conflict is real, it needs an ADR addendum, not a
    silent workaround.
 
@@ -84,13 +84,17 @@ intake), ADR-001 (security mandatory), ADR-002 (stack), ADR-003 (4-layer medalli
 (batch-first/CDC-later), ADR-005 (star schema + MDM xwalk). `governance/BOUNDARY_CONTRACT.md`,
 `governance/BACKLOG.md`.
 
-**Governance gate:** `@architect` (Opus) holds ultimate veto on model/schema changes and enforces
-the Clean-ERD Doctrine (1 table = 1 grain = 1 entity, bridge tables not CTEs for N:N, serving =
-view never a duplicated table, one explicit SCD strategy per table). `@scope-guardian` holds hard
-veto on scope creep. No Gold/marts work proceeds without architect sign-off.
+**Governance gate:** `@staff-data-engineer` (Opus, top technical authority — merged Staff DE +
+architect) holds ultimate veto on model/schema changes and enforces the Clean-ERD Doctrine
+(1 table = 1 grain = 1 entity, bridge tables not CTEs for N:N, serving = view never a duplicated
+table, one explicit SCD strategy per table), AND owns technical strategy / stack / buy-vs-build /
+trade-off analysis for new features. `@scope-guardian` holds hard veto on scope creep. No
+Gold/marts work proceeds without `@staff-data-engineer` sign-off.
 
-## Cabinet (7 agents) — see `.claude/agents/`
-`@architect` (Opus, ultimate veto) · `@scope-guardian` (hard veto on scope) ·
+## Cabinet (6 agents) — see `.claude/agents/`
+`@staff-data-engineer` (Opus, top technical authority — model/schema ultimate veto + Clean-ERD
+doctrine + stack/tool/trade-off strategy; merged the former `@architect` role) ·
+`@scope-guardian` (hard veto on scope) ·
 `@senior-data-engineer` (build, idempotency, perf) · `@data-quality-steward` (DQ plan, gates) ·
 `@product-owner` (BQ definition-of-done) · `@finops-agent` (part-time — Databricks/Snowflake/
 Kaggle-API cost watch) · `@cikgu` (optional teaching layer, run as MAIN session not a subagent —

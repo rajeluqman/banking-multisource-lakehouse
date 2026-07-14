@@ -19,7 +19,7 @@ must pass through this sequence before any code is written:
 2. **Clarify** — the assistant/session MUST produce a list of unresolved questions (ambiguous
    scope, unclear grain impact, unclear stack fit) BEFORE producing a plan. If genuinely zero
    ambiguity, state that explicitly with a one-line reason — do not skip the step silently.
-3. **Ruling** — architect and/or scope-guardian answer: fits current model/stack as-is / needs a
+3. **Ruling** — staff-data-engineer (model/stack veto) and/or scope-guardian answer: fits current model/stack as-is / needs a
    new ADR / rejected (name the reason, add to `governance/BACKLOG.md` if rejected-but-revisit-able).
 4. **ADR (if the ruling changes an architectural decision)** — write it before implementation,
    not after. A retroactive ADR describing code that already exists is a smell, not a record.
@@ -34,7 +34,7 @@ must pass through this sequence before any code is written:
 
 ## §2 — Minimum non-negotiable roster
 Regardless of how far the agent roster is trimmed for a small project (see
-`operating/agents/`), the **architect** (or equivalent solo-owner judgment call, if no
+`operating/agents/`), the **staff-data-engineer** (model/stack veto — formerly the architect; or equivalent solo-owner judgment call, if no
 multi-agent setup exists) and **scope-guardian** functions must exist in some form — even if
 that "form" is a single person/session applying both hats deliberately. What must not happen is
 zero checkpoint at all between idea and code.
