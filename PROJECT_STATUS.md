@@ -2,7 +2,47 @@
 
 ## ▶ RESUME HERE (read this first)
 
-**2026-07-15 (third session, later same day) — LATEST: ALL 5 SOURCES LIVE, 10/10 BUSINESS
+**2026-07-15 (fourth session, later same day) — LATEST: R-14/D-12 CURRENCY NORMALIZATION BUILT —
+a real, live correctness bug in marts already marked PROVEN is now fixed. Full detail:
+`BUILD_REPORT.md` §16, `journey/08_SERVING_AND_EVIDENCE.md` (BQ-01/BQ-06/BQ-08 evidence lines
+updated with corrected numbers).** Summary:
+
+- D-12 ("Gold normalizes to MYR via a static FX seed table") and R-14 (its blocking DQ gate) were
+  documented since the planning lab but never built. `mart_daily_flows.py`/`mart_customer_360.py`
+  were silently summing Berka's CZK legs and PaySim's MYR legs together with zero conversion —
+  confirmed live via `CUST_BK_1179`, whose `431259.62` `total_txn_value` was already sitting in
+  `journey/08_SERVING_AND_EVIDENCE.md` as "real" evidence; corrected to `413972.663`.
+- Got `@staff-data-engineer` sign-off (STOP-GATE, Gold model/schema territory) before building:
+  new conformed dimension `dim_fx_rate` (`seed/artifacts/fx_rates.csv` +
+  `pipeline/gold/dim_fx_rate.py`, ADR-005 addendum #1), FX conversion done ONCE at the fact grain
+  via `to_myr` (`pipeline/gold/common.py`) — additive `amount_myr`/`current_balance_myr`, native
+  `amount`/`currency` columns kept for lineage.
+- **Scope conflict surfaced and escalated, not silently resolved**: the sign-off's design needed
+  a real `currency` column on 3 existing Silver tables (`sil_trans`, `sil_application`,
+  `sil_campaign_response`), but this session's brief said Silver/Bronze are untouched
+  ("Gold-layer-only"). The permission system blocked the first attempt at deleting/rebuilding
+  those Silver tables; asked the owner directly, approved. No live source connections used — all
+  3 tables rebuilt locally from Bronze data already on disk.
+- `pipeline/gold/dq_currency_gate.py` (R-14) now passes for real against 6 monetary columns
+  across all 5 sources — wired into `pipeline/orchestrate_config.yml` ahead of
+  `fact_txn`/`fact_card_fraud`. `AMT_INCOME_TOTAL` (Home Credit) is a documented D-12 exception
+  (`unitless`, never converted — anonymized data, real currency unknown, never summed cross-
+  source).
+- Real before/after evidence (row counts unchanged — value-correctness fix, not a grain/join
+  fix): `mart_customer_360.CUST_BK_1179` `431259.62`→`413972.663`; `mart_cross_sell.CUST_397288`
+  `59361.9`→`12169.1895`; `mart_daily_flows.total_deposits_snapshot` `6255598.0`→`1282397.59`
+  (the largest correction, a 79.5% overstatement). Audited every other Gold builder summing
+  money (`mart_fraud_daily`, `mart_risk_segment`) — both confirmed single-currency, not buggy,
+  left unchanged.
+- Doc correction: `journey/05_STTM.md` previously said PaySim's `amount` currency was
+  "unitless" — the actual seed code has always tagged `MYR`; corrected against live Bronze
+  schema (map vs. territory, CLAUDE.md anti-shortcut rule #5).
+- All 4 gates + `python3 -m unittest discover tests` (7/7) green.
+
+**Next session**: no known blockers. Candidate next work: same as below (OBP mart wiring, Fasa E,
+canonical Databricks trial) — none touched or changed by this session's fix.
+
+**2026-07-15 (third session, later same day) — ALL 5 SOURCES LIVE, 10/10 BUSINESS
 QUESTIONS PROVEN. Full detail: `journey/08_SERVING_AND_EVIDENCE.md`, `BUILD_REPORT.md` §15.**
 Summary:
 

@@ -35,14 +35,14 @@ rows and a 100% `dim_customer_xwalk`↔MSSQL overlap.
 
 | BQ | Mart | Query location | Output captured | Status |
 |---|---|---|---|---|
-| BQ-01 | mart_customer_360 | pipeline/gold/mart_customer_360.py | **real**, 329,984 rows — top by txn_count: `CUST_BK_1179 txn_count=6 total_txn_value=431259.62 product_count=1` | **PROVEN** |
+| BQ-01 | mart_customer_360 | pipeline/gold/mart_customer_360.py | **real**, 329,984 rows — top by txn_count: `CUST_BK_1179 txn_count=6 total_txn_value=413972.66 product_count=1` (2026-07-15 R-14/D-12 fix: was `431259.62` — a real, live currency-mixing bug, this customer's 5 Berka/CZK legs were summed with 1 PaySim/MYR leg with zero conversion; BUILD_REPORT.md §16) | **PROVEN** |
 | BQ-02 | mart_fraud_daily | pipeline/gold/mart_fraud_daily.py | **real**, 28 rows — `2026-06-22 CASH_OUT fraud_txn_count=1 fraud_txn_value=48299.77` | **PROVEN** |
 | BQ-03 | mart_fraud_followup | pipeline/gold/mart_fraud_followup.py | **real** — `fraud_event_count=32, within_sla_count=0, within_sla_pct=0.0` (synthetic seed-time Case data, not correlated with real fraud events — a documented simulated signal, not a bug, see `seed/salesforce/load_berka.py`'s `_generate_cases`) | **PROVEN** |
 | BQ-04 | mart_loan_funnel | pipeline/gold/mart_loan_funnel.py | **real** — `app_month=2026-07, application_count=5000, approval_rate_pct=0.92, avg_days_to_decision=922.76` | **PROVEN** |
 | BQ-05 | mart_risk_segment | pipeline/gold/mart_risk_segment.py | **real**, 5000 rows — `CUST_310094 income_band=MEDIUM NAME_INCOME_TYPE=Working is_default=1` | **PROVEN** |
-| BQ-06 | mart_cross_sell | pipeline/gold/mart_cross_sell.py | **real**, 87 qualifying customers — `CUST_397288 current_balance=59361.9 last_txn_ts=2025-10-13` | **PROVEN** |
+| BQ-06 | mart_cross_sell | pipeline/gold/mart_cross_sell.py | **real**, 87 qualifying customers — `CUST_397288 current_balance=12169.19 last_txn_ts=2025-10-13` (2026-07-15 R-14/D-12 fix: was `59361.9` — Berka's raw CZK balance was surfaced in Gold without conversion to the MYR reporting standard; BUILD_REPORT.md §16) | **PROVEN** |
 | BQ-07 | mart_dormancy | pipeline/gold/mart_dormancy.py | **real**, 310,159 rows — longest-dormant: `CUST_BK_1475 last_txn_ts=2023-04-14 days_since_last_txn=1188` | **PROVEN** |
-| BQ-08 | mart_daily_flows | pipeline/gold/mart_daily_flows.py | **real**, 469 rows — `2026-07-13 total_in=797035.1 total_out=3842271.6 net_flow=-3045236.5` | **PROVEN** |
+| BQ-08 | mart_daily_flows | pipeline/gold/mart_daily_flows.py | **real**, 469 rows — `2026-07-13 total_in=797035.1 total_out=3842271.6 net_flow=-3045236.5` (unchanged — this date had no Berka legs); `total_deposits_snapshot=1282397.59` (2026-07-15 R-14/D-12 fix: was `6255598.0` — Berka's raw CZK account-balance sum was reported as if it were already MYR, a 79% overstatement; BUILD_REPORT.md §16) | **PROVEN** |
 | BQ-09 | fact_txn x dim_customer | pipeline/gold/fact_txn.py + pipeline/gold/dim_customer.py | **real** — 20,750/20,750 `fact_txn` rows join cleanly to `dim_customer` (0 NULL `customer_id`, both PaySim and Berka legs) — `CUST_PS_C1463592651 amount=280555.57 source=paysim` | **PROVEN** (was 0/20,750 before this session's fixes — see bug list) |
 | BQ-10 | mart_pipeline_health | pipeline/gold/mart_pipeline_health.py | **real** — all 5 sources `reconciled=true`: `postgres` 5000/5000, `mssql` 20000/20000, `salesforce` 181/181, `teradata` 45211/45211, `obp` 20/20. No Slack alert fired. | **PROVEN** |
 

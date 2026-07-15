@@ -12,7 +12,7 @@ dedicated Codespace (BUILD_REPORT.md).
 from __future__ import annotations
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, lit
 
 from pipeline.common.lake_paths import layer_path
 from pipeline.silver.common import build_simple_table, merge_upsert, orphan_quarantine
@@ -21,13 +21,23 @@ from pipeline.silver.common import build_simple_table, merge_upsert, orphan_quar
 def build_sil_application(spark: SparkSession) -> None:
     """Home Credit `application` — Bronze keeps ALL ~122 anonymized columns verbatim (R-02);
     Silver prunes to the STTM-selected set (journey/05_STTM.md), everything else dropped
-    here, not silently carried forward."""
+    here, not silently carried forward.
+
+    `currency="unitless"` (D-12/R-14) on `AMT_INCOME_TOTAL`: this is anonymized Kaggle
+    competition data with no real-world currency known (unlike PaySim/Berka/Teradata, which
+    each have a documented native currency) — tagged with the same non-convertible sentinel
+    `dim_fx_rate` uses so D-12's "every monetary column carries a currency code" holds
+    literally and R-14's completeness gate doesn't have to special-case this column. Never
+    fed through `pipeline/gold/common.py::to_myr` — it is only percentile-banded within its
+    own source (`mart_risk_segment.py`), never summed/converted (@staff-data-engineer
+    sign-off, this session)."""
     KEEP_COLUMNS = [
         "SK_ID_CURR", "TARGET", "AMT_INCOME_TOTAL", "NAME_INCOME_TYPE", "ORGANIZATION_TYPE",
         "created_at", "updated_at", "is_deleted",
     ]
     df = spark.read.format("delta").load(layer_path("bronze", "postgres", "application"))
     pruned = df.select(*[c for c in KEEP_COLUMNS if c in df.columns])
+    pruned = pruned.withColumn("currency", lit("unitless"))
     merge_upsert(spark, pruned, "silver", "application", "SK_ID_CURR")
 
 

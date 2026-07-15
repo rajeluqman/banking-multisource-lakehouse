@@ -16,7 +16,7 @@ from pyspark.sql.functions import col
 from pipeline.common.lake_paths import layer_path
 from pipeline.silver.common import latest_state_from_cdc_log, merge_upsert
 
-_VALUE_COLUMNS = ["job", "marital", "education", "default", "balance", "poutcome", "y"]
+_VALUE_COLUMNS = ["job", "marital", "education", "default", "balance", "poutcome", "y", "currency"]
 
 
 def build_sil_campaign_response(spark: SparkSession) -> None:

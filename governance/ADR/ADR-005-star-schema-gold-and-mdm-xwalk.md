@@ -49,4 +49,23 @@ schema with one conformed dimension (the crosswalk) is the correct fit and is si
   table, filled per table as Fasa D builds each one.
 
 ## Addendum log
-None yet.
+**Addendum #1 (2026-07-15, @staff-data-engineer sign-off) — `dim_fx_rate`, a new conformed
+dimension implementing locked D-12/R-14 (currency normalization).** Not new scope — D-12
+("Gold normalizes to one reporting currency (MYR) via a static FX seed table",
+journey/05_STTM.md) and R-14 (journey/06_DQ_PLAN.md) were locked decisions that had never
+actually been built; `mart_daily_flows.py`/`mart_customer_360.py` were silently summing
+CZK+MYR together (real, live bug — BUILD_REPORT.md §16). No ADR-000 intake needed.
+- **Grain**: one row per `currency_code` (`seed/artifacts/fx_rates.csv` →
+  `pipeline/gold/dim_fx_rate.py`, same seed-artifact-load pattern as `dim_customer_xwalk.py`).
+  Static (`rate_as_of` is metadata only, not part of the PK/join) — a date-versioned rate
+  would force an as-of temporal join and change fact grain semantics; D-12 explicitly wants
+  a static seed table, live BNM OpenAPI enrichment stays optional/out of scope.
+- **Single resolution path** (this doctrine's own rule, line ~43): FX conversion happens
+  ONCE, via `to_myr` (`pipeline/gold/common.py`), at the fact grain (`fact_txn.amount_myr`,
+  `fact_card_fraud.amount_myr`) and once in the shared `latest_balance_per_account` helper
+  (`current_balance_myr`) — no per-mart FX join. Native `amount`/`currency`/
+  `current_balance` columns are kept, never overwritten (lineage/auditability).
+- **Grain of `fact_txn`/`fact_card_fraud` unchanged** — adding `amount_myr` is an additive
+  derived column, not a new grain or entity, so this does not require its own ADR beyond
+  this addendum.
+- **SCD**: static overwrite, same as `dim_customer_xwalk.py` (Type 1-equivalent, stated).

@@ -18,6 +18,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, month, year
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.gold.common import to_myr
 
 
 def build(spark: SparkSession) -> None:
@@ -55,19 +56,28 @@ def build(spark: SparkSession) -> None:
     # transaction attributes to a single customer, preserving fact_txn's stated one-row-per-
     # transaction grain.
     disp = spark.read.format("delta").load(layer_path("silver", "disp")).filter(col("type") == "OWNER")
+    # currency now a real Silver column (pipeline/silver/silver_crm.py::build_sil_trans,
+    # D-12/R-14 fix, this session) — no more Gold-layer lit("CZK") literal, invisible to the
+    # R-14 completeness gate.
     berka_facts = (
         trans.alias("trans").join(disp.alias("disp"), "account_id", "left")
         .join(berka_xwalk, "client_id", "left")
         .select(
             col("trans_id").alias("txn_id"), col("customer_id"),
             col("date").alias("txn_ts"), col("trans.type").alias("txn_type"),
-            col("amount"), lit("CZK").alias("currency"),
+            col("amount"), col("currency"),
             lit(0).cast("long").alias("is_fraud"),  # match sil_card_txn's is_fraud (long 0/1, not boolean)
             lit("berka").alias("source_system"),
         )
     )
 
     fact = paysim_facts.unionByName(berka_facts)
+    # D-12 — convert ONCE here at the fact grain (ADR-005: single resolution path, no
+    # per-mart FX join). `amount` (native currency) is kept, NOT overwritten — `amount_myr`
+    # is additive, the column every downstream mart summing money across sources must read
+    # instead (mart_daily_flows.py/mart_customer_360.py were silently mixing CZK+MYR before
+    # this fix — real, live bug, see BUILD_REPORT.md §16).
+    fact = to_myr(spark, fact, "amount", "currency", "amount_myr")
     fact = fact.withColumn("txn_year", year(col("txn_ts"))).withColumn("txn_month", month(col("txn_ts")))
     fact.write.format("delta").partitionBy("txn_year", "txn_month").mode("append").save(layer_path("gold", "fact_txn"))
 

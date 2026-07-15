@@ -1,4 +1,4 @@
-.PHONY: gates seed-sources fetch-datasets build-xwalk seed-postgres seed-mssql seed-sap-hana seed-teradata seed-all drip-feed docker-up docker-down
+.PHONY: gates seed-sources fetch-datasets build-xwalk build-fx-rates seed-postgres seed-mssql seed-sap-hana seed-teradata seed-all drip-feed docker-up docker-down
 
 # Governance gates (gates/framework.yml-driven) — safe to run anywhere, no cloud/creds needed.
 gates:
@@ -22,6 +22,9 @@ fetch-datasets:
 build-xwalk:
 	python3 seed/build_xwalk.py --data-dir data/raw --out seed/artifacts/dim_customer_xwalk.csv
 
+build-fx-rates:
+	python3 seed/build_fx_rates.py --out seed/artifacts/fx_rates.csv
+
 seed-postgres:
 	python3 seed/postgres/load_home_credit.py --data-dir data/raw/home_credit
 
@@ -36,7 +39,7 @@ seed-teradata:
 		--xwalk seed/artifacts/dim_customer_xwalk.csv
 
 # Order matters: xwalk needs raw CSVs on disk (not the DBs); Teradata needs the xwalk.
-seed-all: fetch-datasets build-xwalk seed-postgres seed-mssql seed-sap-hana seed-teradata
+seed-all: fetch-datasets build-xwalk build-fx-rates seed-postgres seed-mssql seed-sap-hana seed-teradata
 
 drip-feed:
 	python3 drip_feed.py

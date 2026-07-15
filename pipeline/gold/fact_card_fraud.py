@@ -13,6 +13,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, month, year
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.gold.common import to_myr
 
 
 def build(spark: SparkSession) -> None:
@@ -33,6 +34,10 @@ def build(spark: SparkSession) -> None:
         .join(txn_customer, card_txn.txn_id == txn_customer._txn_id, "left")
         .select("txn_id", "customer_id", "txn_ts", "txn_type", "amount", "currency")
     )
+    # D-12 — PaySim-only today (rate 1.0), but routed through the same fact-layer FX
+    # conversion as fact_txn.py rather than special-cased, so R-14 stays uniform if a
+    # non-MYR fraud source is ever added.
+    fraud = to_myr(spark, fraud, "amount", "currency", "amount_myr")
     fraud = fraud.withColumn("txn_year", year(col("txn_ts"))).withColumn("txn_month", month(col("txn_ts")))
     fraud.write.format("delta").partitionBy("txn_year", "txn_month").mode("append").save(layer_path("gold", "fact_card_fraud"))
 

@@ -6,7 +6,14 @@ prior campaign responsiveness (ADR-006 D6.4). Grain: one row per qualifying cust
 at Silver build time, not recomputed per mart run. "Balance" is read from `trans` (each
 Berka transaction carries the running post-transaction balance — there is no static balance
 column on `account` itself; this is the standard Berka schema shape, (unverified) until
-checked against the real .asc file per journey/03's assumption log)."""
+checked against the real .asc file per journey/03's assumption log).
+
+`current_balance`/`balance_p50` are reported in MYR (D-12) via
+`pipeline/gold/common.py::latest_balance_per_account`'s `current_balance_myr` — Berka's raw
+CZK balance was previously surfaced in Gold as-is, not normalized to the reporting currency
+(real, live bug — BUILD_REPORT.md §16). Single-source (Berka only) so this was never a
+cross-currency-mixing bug like `mart_daily_flows.py`/`mart_customer_360.py`, just a
+D-12-compliance gap."""
 
 from __future__ import annotations
 
@@ -30,13 +37,13 @@ def build(spark: SparkSession) -> None:
         .filter(col("source_system") == "berka") \
         .select(col("native_key").alias("client_id"), "customer_id")
 
-    balances = latest_balance_per_account(trans)
-    balance_p50 = balances.select(approx_percentile("current_balance", 0.5).alias("p50")).collect()[0]["p50"]
+    balances = latest_balance_per_account(spark, trans)
+    balance_p50 = balances.select(approx_percentile("current_balance_myr", 0.5).alias("p50")).collect()[0]["p50"]
 
     deposits = (
         disp.join(balances, "account_id", "left")
         .join(xwalk, "client_id", "left")
-        .select("customer_id", "current_balance")
+        .select("customer_id", col("current_balance_myr").alias("current_balance"))
     )
 
     has_loan = fact_loan.select("customer_id").distinct().withColumn("has_loan", lit(True))

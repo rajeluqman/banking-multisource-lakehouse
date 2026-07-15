@@ -28,7 +28,7 @@ dedicated Codespace (BUILD_REPORT.md).
 from __future__ import annotations
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, lit
 from pyspark.sql.types import StringType
 
 from pipeline.common.lake_paths import layer_path
@@ -127,7 +127,18 @@ def build_sil_trans(spark: SparkSession) -> None:
     column — a real counterparty bank account number, unlike the `account_id` surrogate
     join key) is masked to last-4 (D-07); `account_id` itself is NOT masked here — it is
     the join key `fact_txn.py`/`mart_cross_sell.py`/`mart_daily_flows.py` use to bridge to
-    `sil_disp`, and masking it would silently break every one of those joins."""
+    `sil_disp`, and masking it would silently break every one of those joins.
+
+    `currency="CZK"` (D-12/R-14): tagged HERE at Silver rather than literally at the
+    Salesforce seed object — adding a new custom field to the live org is an owner-only
+    Setup UI action (established precedent, PROJECT_STATUS.md history), out of this build
+    session's reach. CZK is a single invariant constant for 100% of Berka rows (a Czech
+    bank), same as PaySim/Teradata's own seed-time tags are single constants applied
+    uniformly (`seed/mssql/load_paysim.py`, `seed/teradata/load_bank_marketing.py`) — a
+    Silver-layer tag is equivalent in correctness, just applied one layer later. Previously
+    this was a `lit("CZK")` scattered inside `pipeline/gold/fact_txn.py`'s Gold builder,
+    invisible to the R-14 Silver->Gold completeness gate — moved here so the gate can check
+    it like every other source's currency column."""
     raw = (
         spark.read.format("delta").load(layer_path("bronze", "salesforce", "transaction"))
         .select(
@@ -141,6 +152,7 @@ def build_sil_trans(spark: SparkSession) -> None:
             col("k_symbol__c").alias("k_symbol"),
             col("bank__c").alias("bank"),
             col("partner_account__c").alias("partner_account"),
+            lit("CZK").alias("currency"),
         )
     )
     raw = mask_last4(raw, "partner_account")

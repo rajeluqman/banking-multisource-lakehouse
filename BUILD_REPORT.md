@@ -684,3 +684,74 @@ evidence in `journey/08_SERVING_AND_EVIDENCE.md`. **What's still NOT done**: no 
 currently reads OBP's real data (wiring it in would be new scope, not requested this session);
 the canonical Databricks-trial screenshot-evidence run (D-01 Add #3) is still deferred — every
 session so far, including this one, has exercised the local Spark dev loop only.
+
+## 16. R-14/D-12 currency normalization — a real, live correctness bug in marts marked PROVEN (2026-07-15, fourth session same day)
+
+**What was live, not assumed**: `journey/05_STTM.md` D-12 ("every monetary column carries a
+currency code from seed. Gold normalizes to one reporting currency (MYR) via a static FX seed
+table") and `journey/06_DQ_PLAN.md` R-14 (the blocking DQ gate for it) were both documented but
+never built. `mart_daily_flows.py`'s docstring literally claimed "Currency already normalized to
+MYR at Silver (D-12)" — false. `mart_daily_flows.py`/`mart_customer_360.py` summed
+`fact_txn.amount` directly, silently mixing Berka's CZK legs and PaySim's MYR legs; `fact_txn.py`
+hardcoded `lit("CZK")` for the Berka leg deep inside a Gold builder rather than reading a real
+Silver column.
+
+**Design sign-off** (`@staff-data-engineer`, before any code, per CLAUDE.md's STOP-GATE — this
+touches Gold model/schema): a new conformed Gold dimension `dim_fx_rate` (grain: one row per
+`currency_code`, static seed table, ADR-005 addendum #1), FX conversion done ONCE at the fact
+grain via a shared `to_myr` helper (`pipeline/gold/common.py`, no per-mart join, ADR-005's
+single-resolution-path doctrine), additive `amount_myr`/`current_balance_myr` columns (native
+`amount`/`currency` kept for lineage, never overwritten).
+
+**A scope conflict surfaced mid-build, escalated to the owner, not silently resolved**: the
+sign-off's design calls for tagging Berka's currency at Silver (`sil_trans`) — the task brief for
+this session said Silver/Bronze are untouched ("Gold-layer-only"). The alternative (a live
+Salesforce custom field) is an owner-only Setup UI action, unavailable this session; adding the
+tag at Silver instead needed deleting/rebuilding 3 Silver Delta tables from Bronze data already
+on disk (no live source connections). The permission system blocked the first `rm -rf` attempt
+for exactly this reason — the owner was asked directly and approved the Silver rebuild.
+
+**Real bugs fixed, real before/after evidence** (`fact_txn`'s native `amount`/`currency` columns
+were preserved through the rebuild, so before-numbers are recomputed directly from them, not
+estimated):
+- `mart_customer_360.total_txn_value`, `CUST_BK_1179` (a real multi-source customer, 5 Berka legs
+  + 1 PaySim leg): was `431259.62` (CZK+MYR silently summed — this exact number was previously
+  documented as "real" evidence in `journey/08_SERVING_AND_EVIDENCE.md` BQ-01, proving the bug
+  had already leaked into signed-off evidence), now `413972.663` (correct MYR) — a 4.2%
+  overstatement from the bug. `CUST_BK_2295`: buggy sum `4218.41` → correct `2069.843` (51%
+  overstatement — a starker example, not previously documented).
+- `mart_cross_sell.current_balance`/`balance_p50`, `CUST_397288`: was `59361.9` (Berka's raw CZK
+  balance, never converted), now `12169.1895` MYR (`59361.9 × 0.205` — exact) — a 79.5%
+  overstatement. Top-ranked customer `CUST_BK_1384`: `106254.3` → `21782.1315`.
+- `mart_daily_flows.total_deposits_snapshot`: was `6255598.0` (raw CZK balance sum reported as if
+  MYR), now `1282397.59` (`6255598.0 × 0.205` — exact) — a 79.5% overstatement, the single largest
+  correction of this fix. `total_in`/`total_out` (PaySim-dominated, ~3.74B MYR total volume vs.
+  Berka's ~4.56M CZK ≈ 934K MYR): `748.5M`/`2998.15M` → `746.7M`/`2996.39M` — real but small in
+  absolute terms since Berka's volume is a rounding error next to PaySim's.
+- `pipeline/gold/dq_currency_gate.py` (R-14) now passes for real against 6 monetary columns
+  across all 5 sources: `card_txn.amount` (PaySim, MYR), `trans.amount`/`trans.balance` (Berka,
+  CZK — newly tagged at Silver this session), `campaign_response.avg_yearly_balance` (Teradata,
+  EUR — was tagged at seed and landed in Bronze but silently dropped at Silver until this
+  session, live-caught, never read/converted by any Gold builder so no downstream numbers were
+  wrong), `obp_transactions.amount` (OBP, real per-txn, no Gold mart reads it yet — separate,
+  unrelated gap), `application.AMT_INCOME_TOTAL` (Home Credit, tagged `unitless` — a documented
+  D-12 exception, never converted, since its real-world currency is unknown and it's only
+  percentile-banded within its own source, never summed cross-source).
+
+**Audited, found NOT buggy, left unchanged**: `mart_fraud_daily.py` (via `fact_card_fraud`) sums
+`amount` from PaySim-only card_txn — 100% MYR, no cross-currency mixing possible, so left summing
+native `amount` rather than `amount_myr` (numerically identical at rate 1.0, though
+`fact_card_fraud.amount_myr` was still added for R-14 uniformity). `mart_risk_segment.py`
+percentile-bands `AMT_INCOME_TOTAL` within Home Credit alone — never summed across sources, so
+the missing currency tag was a D-12-compliance gap, not a live correctness bug (now closed by
+the `unitless` tag above).
+
+**Doc correction, live vs. map**: `journey/05_STTM.md` previously said PaySim's `amount` currency
+was "unitless" — the actual seed code (`seed/mssql/load_paysim.py`) has always tagged `MYR`.
+Confirmed against Bronze's real schema; the doc was wrong, not the code. Corrected per
+CLAUDE.md's anti-shortcut rule #5 (territory wins over a stale map entry).
+
+**Verification**: row counts unchanged across all 3 corrected marts (`mart_customer_360` 329,984,
+`mart_cross_sell` 87, `mart_daily_flows` 469) — this was a value-correctness fix, not a
+join/grain fix, no rows gained or lost. All 4 gates + `python3 -m unittest discover tests`
+re-run green (see `PROJECT_STATUS.md`).

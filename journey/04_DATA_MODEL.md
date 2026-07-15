@@ -20,6 +20,7 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `sil_campaign_response` | one row per Teradata Bank Marketing record (post-xwalk-linkage) | Marketing/campaign response (ADR-006) | Silver |
 | `dim_customer` | one row per bank-wide `customer_id` (golden record) | Customer | Gold |
 | `dim_date` | one row per calendar date | Date | Gold |
+| `dim_fx_rate` | one row per `currency_code` | FX reference rate (D-12, ADR-005 addendum #1, this session) | Gold |
 | `fact_txn` | one row per transaction (any source, unioned + conformed) | Financial transaction | Gold |
 | `fact_card_fraud` | one row per PaySim transaction flagged `isFraud=1` | Fraud event | Gold |
 | `fact_loan_application` | one row per Home Credit application | Loan application | Gold |

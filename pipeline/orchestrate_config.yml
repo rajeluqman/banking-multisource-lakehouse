@@ -89,6 +89,16 @@ stages:
     cadence: on_upstream
     depends_on: []  # self-contained calendar-range generation, no source read
 
+  - name: dim_fx_rate
+    module: pipeline.gold.dim_fx_rate
+    cadence: on_upstream
+    depends_on: []  # loads seed/artifacts/fx_rates.csv, a seed-time artifact (D-12), same pattern as dim_customer_xwalk
+
+  - name: dq_currency_gate
+    module: pipeline.gold.dq_currency_gate
+    cadence: on_upstream
+    depends_on: [silver_sales, silver_fraud, silver_crm, silver_marketing, silver_core_banking]  # R-14 — block Gold build if any monetary column lacks a currency tag
+
   - name: dim_customer
     module: pipeline.gold.dim_customer
     cadence: on_upstream
@@ -97,12 +107,12 @@ stages:
   - name: fact_txn
     module: pipeline.gold.fact_txn
     cadence: on_upstream
-    depends_on: [dim_customer_xwalk, silver_fraud, silver_crm]  # silver/card_txn + silver/trans + silver/disp
+    depends_on: [dim_customer_xwalk, dim_fx_rate, dq_currency_gate, silver_fraud, silver_crm]  # silver/card_txn + silver/trans + silver/disp; D-12 FX conversion at fact grain
 
   - name: fact_card_fraud
     module: pipeline.gold.fact_card_fraud
     cadence: on_upstream
-    depends_on: [dim_customer_xwalk, silver_fraud]  # silver/card_txn
+    depends_on: [dim_customer_xwalk, dim_fx_rate, dq_currency_gate, silver_fraud]  # silver/card_txn; D-12 FX conversion at fact grain
 
   - name: fact_loan_application
     module: pipeline.gold.fact_loan_application
@@ -118,12 +128,12 @@ stages:
   - name: mart_cross_sell
     module: pipeline.gold.mart_cross_sell
     cadence: on_upstream
-    depends_on: [dim_customer, fact_loan_application, fact_txn, dim_customer_xwalk, silver_marketing, silver_crm]
+    depends_on: [dim_customer, fact_loan_application, fact_txn, dim_customer_xwalk, dim_fx_rate, silver_marketing, silver_crm]  # dim_fx_rate: latest_balance_per_account converts to MYR (D-12)
 
   - name: mart_daily_flows
     module: pipeline.gold.mart_daily_flows
     cadence: on_upstream
-    depends_on: [fact_txn, silver_crm]
+    depends_on: [fact_txn, dim_fx_rate, silver_crm]  # dim_fx_rate: latest_balance_per_account converts to MYR (D-12)
 
   - name: mart_dormancy
     module: pipeline.gold.mart_dormancy
