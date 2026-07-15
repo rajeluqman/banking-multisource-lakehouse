@@ -31,8 +31,13 @@ def build(spark: SparkSession, start: dt.date, end: dt.date) -> None:
     df.write.format("delta").mode("overwrite").save(layer_path("gold", "dim_date"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     today = dt.date.today()
     build(get_spark("dim_date"), start=today - dt.timedelta(days=3650), end=today)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

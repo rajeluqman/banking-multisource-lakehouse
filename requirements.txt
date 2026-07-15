@@ -1,8 +1,35 @@
 
-psycopg2-binary>=2.9
-pyodbc>=5.1
-hdbcli>=2.19
-teradatasql>=17.20
+# --- Source-system drivers ---
+psycopg2-binary>=2.9          # Postgres (source #1)
+pyodbc>=5.1                   # MS SQL Server (source #2)
+teradatasql>=17.20           # Teradata (source #5) — ClearScape; needs a clean install, a stale
+                             # pip cache can unpack only README/samples (no driver) — see
+                             # BUILD_REPORT.md §11. Verified working at 20.0.0.63.
+simple-salesforce>=1.12      # Salesforce (source #4, ADR-006 Add #2) — Bulk API 2.0 + Client
+                             # Credentials Flow (NOT username-password, see §11)
+requests>=2.31                # Salesforce Client Credentials Flow token POST (pipeline/extract/
+                             # salesforce_auth.py) — simple_salesforce's own login() doesn't
+                             # implement grant_type=client_credentials, so this repo does that
+                             # OAuth token request directly
+
+# --- Cloud SDKs (added 2026-07-14, live-verified — BUILD_REPORT.md §11/§12) ---
+boto3>=1.34                  # AWS S3 (sole source of truth, ADR-002) + cross-cloud S3 from Azure
+                             # Databricks cluster (read+write, since UC-over-S3 is read-only on
+                             # Azure — ADR-002 Add #2)
+snowflake-connector-python>=3.12  # Snowflake serving veneer (Fasa E, optional — ADR-002)
+databricks-sdk>=0.30         # Databricks control plane (cluster start/stop, UC catalog listing)
+kaggle>=1.6                  # Seed-time dataset download (Home Credit / PaySim)
+
+# --- Spark/Delta (Bronze/Silver/Gold compute, ADR-002/ADR-003) ---
+pyspark==3.5.3                # local/dev-loop mode (D-14); Databricks canonical run uses the
+                             # cluster's own bundled runtime instead. Needs JAVA_HOME pointed at
+                             # a Java 17/11 JDK locally — Spark 3.5.x's bundled Hadoop client
+                             # calls a Security Manager API (Subject.getSubject) that newer JDKs
+                             # (verified: JDK 25) removed, so the newest system JDK may not work.
+delta-spark==3.2.1            # matches pyspark 3.5.3; pipeline/common/spark_session.py resolves
+                             # its JVM jar via configure_spark_with_delta_pip in local mode
+
+# --- Core data / config ---
 pandas>=2.2
 pyarrow>=15.0
 SQLAlchemy>=2.0

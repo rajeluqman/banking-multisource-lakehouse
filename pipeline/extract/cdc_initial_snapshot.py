@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""One-time initial-snapshot extraction for CDC sources (ADR-007 D7.5, R-40).
+"""One-time initial-snapshot extraction for CDC sources — Teradata ONLY (ADR-007 D7.5,
+R-40). Salesforce (source #4) no longer needs this module after ADR-006 Add #2: it has no
+trigger/`_cdc_log` blind spot to work around — `SystemModstamp` is set on every record at
+INSERT time, so `salesforce_extract.py`'s first run (no watermark yet -> no `WHERE`
+predicate) naturally pulls everything `seed/salesforce/load_berka.py` just seeded, the same
+way `jdbc_batch_common.py`'s first-run full-pull already does for Postgres/MSSQL.
 
-seed/sap_hana/load_berka.py and seed/teradata/load_bank_marketing.py both INSERT the bulk
-seed data BEFORE calling seed/common/cdc_ddl.py's setup_cdc() — the AFTER INSERT/UPDATE/
-DELETE triggers only fire on changes made AFTER they're installed, so the seed-time bulk
-load never appears in `_cdc_log`, and pipeline/extract/cdc_common.py's poll_cdc_log (which
-only ever reads `_cdc_log`, never the base table) would never land it anywhere. Without this
-module, the seed data silently never reaches Bronze at all for these two sources.
+seed/teradata/load_bank_marketing.py INSERTs the bulk seed data BEFORE calling
+seed/common/cdc_ddl.py's setup_cdc() — the AFTER INSERT/UPDATE/DELETE triggers only fire on
+changes made AFTER they're installed, so the seed-time bulk load never appears in
+`_cdc_log`, and pipeline/extract/cdc_common.py's poll_cdc_log (which only ever reads
+`_cdc_log`, never the base table) would never land it anywhere. Without this module, the
+seed data silently never reaches Bronze at all for this source.
 
 Fix: a one-time, plain full read of the just-seeded rows (same shape as
 pipeline/extract/jdbc_batch_common.py's first-run full-pull — parquet + row-count manifest,
@@ -16,9 +21,10 @@ Called by the seed loader itself, reusing the DataFrame already built in memory 
 round-trip query against the source DB needed) — guarded by a `<table>_initial_snapshot`
 watermark so re-running a seed script doesn't silently re-snapshot a second time.
 
-Not wired into the Silver domain pipelines yet — silver_crm.py/silver_marketing.py currently
-only read the `_cdc` op-log Bronze tables (ADR-007 D7.1). Landing/promoting this data is
-this module's whole job (R-40's stated problem: "the seed data never reaches Bronze"); making
+Not wired into the Silver domain pipelines yet — silver_marketing.py currently only reads
+the `_cdc` op-log Bronze table (ADR-007 D7.1; silver_crm.py no longer applies, ADR-006 Add
+#2 moved it off this module entirely, see above). Landing/promoting this data is this
+module's whole job (R-40's stated problem: "the seed data never reaches Bronze"); making
 Silver UNION it in is a follow-on, not part of this ADR's task list — tracked honestly in
 BUILD_REPORT.md rather than silently expanded into scope this module doesn't own.
 """

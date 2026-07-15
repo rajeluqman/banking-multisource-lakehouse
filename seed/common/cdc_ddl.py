@@ -1,33 +1,40 @@
-"""CDC scaffolding DDL shared by SAP HANA Cloud and Teradata (ADR-006 D6.3).
+"""CDC scaffolding DDL — Teradata ONLY (ADR-006 D6.3). Originally shared with SAP HANA
+Cloud (source #4's prior host); ADR-006 Add #2 moved Salesforce (the new source #4) off
+this trigger + change-table pattern entirely (SaaS OLTP platforms have no DDL-trigger
+surface), so only seed/teradata/load_bank_marketing.py consumes this module now. Kept
+generic (table/pk_column parameters, no Teradata-specific naming) since a future
+CDC-trigger source could reuse it, not because two callers currently share it.
 
-Plain SQL trigger + change-table pattern — deliberately NOT SAP Smart Data Integration/
-Landscape Transformation or Teradata QueryGrid (governance/BOUNDARY_CONTRACT.md). Both
-platforms support standard `AFTER INSERT/UPDATE/DELETE` row-level triggers with a
-`REFERENCING ... AS` clause, so the same DDL shape works on both with only the identifier
-quoting differing slightly — kept as one shared template, not two forks (reuse the pattern
-once, not per-source), consumed by seed/sap_hana/load_berka.py and
-seed/teradata/load_bank_marketing.py.
+Plain SQL trigger + change-table pattern — deliberately NOT Teradata QueryGrid
+(governance/BOUNDARY_CONTRACT.md). Teradata supports standard `AFTER INSERT/UPDATE/DELETE`
+row-level triggers with a `REFERENCING ... AS` clause.
 """
 
 from __future__ import annotations
 
 CDC_LOG_TABLE_DDL = """
-CREATE COLUMN TABLE {table}_cdc_log (
-    seq BIGINT GENERATED ALWAYS AS IDENTITY,
+CREATE MULTISET TABLE {table}_cdc_log (
+    seq INTEGER GENERATED ALWAYS AS IDENTITY (START WITH 1 INCREMENT BY 1 NO CYCLE) NOT NULL,
     op VARCHAR(1) NOT NULL,
-    pk_value NVARCHAR(200) NOT NULL,
-    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    pk_value VARCHAR(200) NOT NULL,
+    changed_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (seq)
 )
 """
 
+# Live-verified against real Teradata Vantage (this module was written against SAP HANA
+# syntax and never actually run before this session — HANA's "CREATE COLUMN TABLE" isn't
+# valid Teradata DDL, IDENTITY needs an explicit (START WITH ... INCREMENT BY ...) clause
+# plus NOT NULL, trigger bodies need "BEGIN ATOMIC" (bare BEGIN errors), and the
+# REFERENCING-alias column reference is bare `new_row.col`, not `:new_row.col` — the colon
+# prefix is embedded-SQL host-variable syntax, not valid inside a trigger body here.
 _TRIGGER_TEMPLATE = """
 CREATE TRIGGER {table}_cdc_{op_lower}
 AFTER {op_sql} ON {table}
 REFERENCING {ref_clause}
 FOR EACH ROW
-BEGIN
-  INSERT INTO {table}_cdc_log (op, pk_value) VALUES ('{op_code}', :{ref_alias}.{pk_column});
+BEGIN ATOMIC
+  INSERT INTO {table}_cdc_log (op, pk_value) VALUES ('{op_code}', {ref_alias}.{pk_column});
 END
 """
 
@@ -48,8 +55,8 @@ def trigger_ddls(table: str, pk_column: str) -> list[str]:
 
 
 def setup_cdc(connection, table: str, pk_column: str) -> None:
-    """Runs the _cdc_log table + 3 triggers against an open DB-API connection (hdbcli or
-    teradatasql — both expose .cursor()/.execute() per PEP 249)."""
+    """Runs the _cdc_log table + 3 triggers against an open DB-API connection (teradatasql
+    — exposes .cursor()/.execute() per PEP 249)."""
     cur = connection.cursor()
     cur.execute(CDC_LOG_TABLE_DDL.format(table=table))
     for ddl in trigger_ddls(table, pk_column):

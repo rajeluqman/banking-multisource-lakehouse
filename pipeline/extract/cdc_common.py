@@ -1,4 +1,8 @@
-"""Shared CDC-poll extraction logic for SAP HANA Cloud and Teradata (ADR-006 D6.3).
+"""Shared CDC-poll extraction logic — Teradata ONLY (ADR-006 D6.3). Salesforce (source #4)
+moved off this pattern entirely in ADR-006 Add #2 (Bulk API 2.0 + `SystemModstamp`
+watermark instead — see pipeline/extract/salesforce_extract.py); this module now serves
+only teradata_extract.py, kept generic (the `connection`/`source` parameters) in case a
+future CDC-trigger source is added, not because two callers currently share it.
 
 Polls each table's `_cdc_log` shadow table (created at seed time by
 seed/common/cdc_ddl.py) ordered by `seq`, tracks its own offset (last-processed `seq`,
@@ -6,10 +10,9 @@ stored in the lake like the batch watermark), and lands each poll's events into 
 as a `dt=YYYY-MM-DD` partition — same shape as every other Landing arrival, so the
 Landing->Bronze promotion gate treats it identically (dedup, `_SUCCESS`, ADR-003).
 
-Deliberately NOT platform-native (no SAP SLT/SDI, no Teradata QueryGrid) — see
-governance/BOUNDARY_CONTRACT.md. `connection` is any PEP 249 DB-API connection (hdbcli or
-teradatasql both qualify), so this one function serves both sap_hana_extract.py and
-teradata_extract.py.
+Deliberately NOT platform-native (no Teradata QueryGrid) — see
+governance/BOUNDARY_CONTRACT.md. `connection` is any PEP 249 DB-API connection
+(teradatasql qualifies).
 """
 
 from __future__ import annotations

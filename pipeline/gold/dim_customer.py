@@ -2,7 +2,7 @@
 """`dim_customer` — the golden record (ADR-005). Type 1 SCD (overwrite each run — no
 history tracking in v1, named as deliberately out in journey/04_DATA_MODEL.md).
 
-Survivorship: source priority CRM(1, sil_client via SAP HANA) > core(2, OBP) >
+Survivorship: source priority CRM(1, sil_client via Salesforce, ADR-006 Add #2) > core(2, OBP) >
 loans(3, sil_application) > cards(4, sil_card_txn); within a customer_id, attributes come
 from the highest-priority source that HAS that customer (a customer only in cards, priority
 4, still gets a row — survivorship picks the best AVAILABLE source, it doesn't require CRM
@@ -59,7 +59,12 @@ def build(spark: SparkSession) -> None:
     dim.write.format("delta").mode("overwrite").save(layer_path("gold", "dim_customer"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("dim_customer"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -230,7 +230,9 @@ R-01…R-35; tracked here since this ADR is this repo's own divergence from that
     `pipeline/gold/mart_pipeline_health.py`, `pipeline/gold/dim_customer.py`,
     `pipeline/orchestrate_config.yml`, `drip_feed.py`, `pipeline/extract/{cdc_common,cdc_initial_snapshot,teradata_extract}.py`
     (comments), `seed/common/cdc_ddl.py` (comment), plus the two orphaned files being replaced
-    (`pipeline/extract/sap_hana_extract.py`, `seed/sap_hana/load_berka.py`). **Decision: rename
+    (pipeline/extract/sap_hana_extract.py, seed/sap_hana/load_berka.py — both DELETED as part of
+    this build, doc_reference_contract.py C2 would otherwise flag these as live-path drift).
+    **Decision: rename
     the source key `sap_hana` → `salesforce` consistently at build time** (@senior-data-engineer,
     Fasa B). Rationale: the key names the *source system*, which is now Salesforce; leaving it
     `sap_hana` would be a lie waiting to mislead. The rename is mechanical but must be done in one

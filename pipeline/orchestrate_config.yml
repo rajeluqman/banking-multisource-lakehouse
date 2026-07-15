@@ -13,8 +13,11 @@
 # all, not "depends on all 5 Silver domains" as the block-diagram would suggest).
 #
 # cadence: batch (scheduled JDBC/API pull) | cdc_poll (short-interval `_cdc_log` poll,
-# ADR-006 D6.3) | on_upstream (dependency-triggered — runs once its `depends_on` all
-# succeeded, not on its own clock; every non-extraction stage is this).
+# ADR-006 D6.3) | bulk_api_poll (short-interval Salesforce Bulk API 2.0 + `SystemModstamp`
+# watermark pull, ADR-006 Add #2 — same re-run-every-tick treatment as cdc_poll in
+# orchestrate.py's `--poll-seconds` loop, since neither is "batch") | on_upstream
+# (dependency-triggered — runs once its `depends_on` all succeeded, not on its own clock;
+# every non-extraction stage is this).
 
 stages:
   # ---- Landing extraction (5 sources) ----
@@ -28,9 +31,9 @@ stages:
     cadence: batch
     depends_on: []
 
-  - name: sap_hana_extract
-    module: pipeline.extract.sap_hana_extract
-    cadence: cdc_poll
+  - name: salesforce_extract
+    module: pipeline.extract.salesforce_extract
+    cadence: bulk_api_poll
     depends_on: []
 
   - name: teradata_extract
@@ -47,7 +50,7 @@ stages:
   - name: promotion_gate
     module: pipeline.promote.promotion_gate
     cadence: on_upstream
-    depends_on: [postgres_extract, mssql_extract, sap_hana_extract, teradata_extract, obp_client]
+    depends_on: [postgres_extract, mssql_extract, salesforce_extract, teradata_extract, obp_client]
 
   # ---- Bronze -> Silver: 5 independently-runnable domain pipelines (ADR-007 D7.1) ----
   - name: silver_sales

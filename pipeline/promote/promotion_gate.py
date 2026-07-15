@@ -12,8 +12,9 @@ Checks (in order — first failure quarantines, no partial promotion):
   4. Schema-drift check against the last-known-good Bronze schema (R-16/R-28) — mismatch
      quarantines with an alert; controlled `mergeSchema` only after explicit review, never silent.
   5. Multi-file set completeness, where applicable (a generic capability — no current source
-     is a multi-file drop after ADR-006 moved Berka off file-drop onto SAP HANA CDC, but the
-     check stays available rather than removed, since D-15's contract describes it generically).
+     is a multi-file drop after ADR-006 moved Berka off file-drop, first onto SAP HANA CDC
+     then onto Salesforce Bulk API (Add #2), but the check stays available rather than
+     removed, since D-15's contract describes it generically).
   6. Dedup: batch partitions dedup at the Silver MERGE (journey/07); CDC partitions dedup
      HERE via anti-join on (source, table, pk_value, op, seq) against what's already in
      Bronze, since a redelivered CDC poll must not double-append events (R-36/R-37).
@@ -106,9 +107,23 @@ def promote_partition(spark: SparkSession, source: str, table: str, partition_pa
             _check_schema_drift(spark, source, f"{table}_cdc", events_df)
             _promote_cdc(spark, source, table, events_df)
         else:
-            batch_df = spark.read.parquet(partition_path)
-            _check_schema_drift(spark, source, table, batch_df)
-            batch_df.write.format("delta").mode("append").save(layer_path("bronze", source, table))
+            # "batch" covers two different Landing shapes: JDBC pulls (jdbc_batch_common.py)
+            # land parquet; API pulls that store the response verbatim (R-19 — obp_client.py)
+            # land a single response.json. Same signal _check_checksum already uses to detect
+            # payload-file-shaped partitions.
+            if (partition_dir / "response.json").exists():
+                batch_df = spark.read.json(str(partition_dir / "response.json"))
+            else:
+                batch_df = spark.read.parquet(partition_path)
+            if not batch_df.columns:
+                # An empty API response (e.g. a sandbox account/transaction list with 0 items)
+                # has no inferable schema — Delta refuses to create a table from it
+                # (DELTA_EMPTY_DATA). Nothing to append; transport integrity already passed
+                # above, so this is a legitimate no-op promotion, not a quarantine.
+                print(f"  {source}.{table}: 0 columns/rows in payload, nothing to append to Bronze")
+            else:
+                _check_schema_drift(spark, source, table, batch_df)
+                batch_df.write.format("delta").mode("append").save(layer_path("bronze", source, table))
 
         return True
 
@@ -138,8 +153,11 @@ def _promote_cdc(spark: SparkSession, source: str, table: str, events_df) -> Non
 
 # (source, table, mode) — mode "cdc" reads Landing at `<table>_cdc/dt=*` (cdc_common.py's
 # poll shape); mode "batch" reads Landing at `<table>/dt=*` (jdbc_batch_common.py's / R-40's
-# cdc_initial_snapshot.py's shape). SAP HANA/Teradata each get BOTH: the ongoing CDC poll
-# AND the one-time R-40 initial snapshot, which lands at the plain (non-`_cdc`) table name.
+# cdc_initial_snapshot.py's shape). Teradata gets BOTH: the ongoing CDC poll AND the
+# one-time R-40 initial snapshot, which lands at the plain (non-`_cdc`) table name.
+# Salesforce (source #4, ADR-006 Add #2) is "batch" only — Bulk API 2.0 + `SystemModstamp`
+# watermark has no `_cdc_log`, so it needs no R-40 initial-snapshot companion either: the
+# first extractor run (no watermark yet) IS the full initial pull, same as Postgres/MSSQL.
 SOURCE_TABLES: dict[str, list[tuple[str, str]]] = {
     "postgres": [
         (t, "batch") for t in (
@@ -148,10 +166,10 @@ SOURCE_TABLES: dict[str, list[tuple[str, str]]] = {
         )
     ],
     "mssql": [("paysim_transactions", "batch")],
-    "sap_hana": (
-        [(t, "cdc") for t in ("client", "account", "disp", "card", "loan", "trans", "district")]
-        + [(t, "batch") for t in ("client", "account", "disp", "card", "loan", "trans", "district")]
-    ),
+    "salesforce": [
+        (t, "batch") for t in
+        ("contact", "account", "accountcontactrelation", "transaction", "district", "case")
+    ],
     "teradata": [("bank_marketing", "cdc"), ("bank_marketing", "batch")],
     "obp": [("accounts", "batch"), ("transactions", "batch")],
 }

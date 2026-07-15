@@ -96,7 +96,7 @@ def main() -> int:
     cur = conn.cursor()
     cur.execute("DROP TABLE bank_marketing" if _table_exists(conn) else "SELECT 1")
     columns_sql = ", ".join(f'"{c}" VARCHAR(200)' for c in df.columns if c != "customer_id")
-    cur.execute(f'CREATE TABLE bank_marketing ("customer_id" VARCHAR(100), {columns_sql}, '
+    cur.execute(f'CREATE TABLE bank_marketing ("customer_id" VARCHAR(100) NOT NULL, {columns_sql}, '
                 f'PRIMARY KEY ("customer_id"))')
     placeholders = ", ".join(["?"] * len(df.columns))
     cur.executemany(f"INSERT INTO bank_marketing VALUES ({placeholders})",

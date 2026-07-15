@@ -25,7 +25,12 @@ def build(spark: SparkSession) -> None:
     fact.write.format("delta").mode("append").save(layer_path("gold", "fact_loan_application"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("fact_loan_application"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

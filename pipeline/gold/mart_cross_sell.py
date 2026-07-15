@@ -61,7 +61,12 @@ def build(spark: SparkSession) -> None:
     mart.write.format("delta").mode("overwrite").save(layer_path("gold", "mart_cross_sell"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("mart_cross_sell"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

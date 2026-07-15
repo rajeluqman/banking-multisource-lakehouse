@@ -17,29 +17,57 @@ from __future__ import annotations
 import datetime as dt
 
 from pyspark.sql import Row, SparkSession
+from pyspark.sql.types import BooleanType, LongType, StringType, StructField, StructType, TimestampType
 
 from pipeline.common.lake_paths import layer_path
 from pipeline.common.watermark import read_run_status, read_watermark
 
+MART_SCHEMA = StructType([
+    StructField("run_ts", TimestampType()),
+    StructField("source", StringType()),
+    StructField("table", StringType()),
+    StructField("bronze_row_count", LongType()),
+    StructField("silver_row_count", LongType()),
+    StructField("last_watermark", StringType()),
+    StructField("reconciled", BooleanType()),
+    StructField("orchestrator_stage", StringType()),
+    StructField("orchestrator_status", StringType()),
+    StructField("orchestrator_error", StringType()),
+])
+
 SOURCES_AND_TABLES = [
     ("postgres", "application"), ("mssql", "paysim_transactions"),
-    ("sap_hana", "client_cdc"), ("teradata", "bank_marketing_cdc"), ("obp", "accounts"),
+    ("salesforce", "contact"), ("teradata", "bank_marketing"), ("obp", "accounts"),
 ]
 
 # source -> its Silver domain pipeline's orchestrator stage name (pipeline/orchestrate_config.yml,
 # ADR-007 D7.1) — used ONLY to look up run-status, not part of the reconciliation logic itself.
 SOURCE_SILVER_STAGE = {
-    "postgres": "silver_sales", "mssql": "silver_fraud", "sap_hana": "silver_crm",
+    "postgres": "silver_sales", "mssql": "silver_fraud", "salesforce": "silver_crm",
     "teradata": "silver_marketing", "obp": "silver_core_banking",
 }
 
 
-def _row_count(spark: SparkSession, layer: str, source: str, table: str) -> int | None:
-    path = layer_path(layer, source, table)
+def _row_count(spark: SparkSession, layer: str, source: str | None, table: str) -> int | None:
+    # Bronze is partitioned by source (bronze/<source>/<table>); Silver is NOT — every
+    # domain builder's merge_upsert (pipeline/silver/common.py) writes at silver/<table>
+    # with no source segment, one Delta table per Silver entity regardless of which source
+    # feeds it (R-30 — this mismatch used to make silver_row_count/reconciled wrong for
+    # every source, not just one, until this fix).
+    path = layer_path(layer, table) if source is None else layer_path(layer, source, table)
     try:
         return spark.read.format("delta").load(path).count()
     except Exception:
         return None  # table doesn't exist yet at this layer for this source — not an error
+
+
+# Bronze table name -> its Silver table name, for the sources where they diverge (a plain
+# `_cdc`-suffix strip covers Teradata; Salesforce's `contact` Bronze table becomes `client`
+# at Silver per the STTM's Berka-native naming, ADR-006 Add #2).
+BRONZE_TO_SILVER_TABLE = {
+    "contact": "client", "paysim_transactions": "card_txn",
+    "bank_marketing": "campaign_response", "accounts": "obp_accounts",
+}
 
 
 def build(spark: SparkSession) -> None:
@@ -47,9 +75,9 @@ def build(spark: SparkSession) -> None:
     rows = []
     for source, table in SOURCES_AND_TABLES:
         bronze_count = _row_count(spark, "bronze", source, table)
-        silver_table = table.replace("_cdc", "").replace("paysim_transactions", "card_txn")
-        silver_count = _row_count(spark, "silver", source, silver_table)
-        watermark_key = f"{table}_cdc_log" if source in ("sap_hana", "teradata") else table
+        silver_table = BRONZE_TO_SILVER_TABLE.get(table.replace("_cdc", ""), table.replace("_cdc", ""))
+        silver_count = _row_count(spark, "silver", None, silver_table)
+        watermark_key = f"{table}_cdc_log" if source == "teradata" else table
         last_watermark = read_watermark(source, watermark_key)
 
         reconciled = (
@@ -67,7 +95,7 @@ def build(spark: SparkSession) -> None:
             orchestrator_error=stage_run_status["error"] if stage_run_status else None,
         ))
 
-    mart = spark.createDataFrame(rows)
+    mart = spark.createDataFrame(rows, schema=MART_SCHEMA)
     mart.write.format("delta").mode("append").save(layer_path("gold", "mart_pipeline_health"))
 
     unreconciled = [r for r in rows if not r.reconciled]
@@ -81,7 +109,12 @@ def build(spark: SparkSession) -> None:
         )
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("mart_pipeline_health"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

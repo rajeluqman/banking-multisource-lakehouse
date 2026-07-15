@@ -1,7 +1,7 @@
 
 # Sources only (D-01 Addendum #3, ADR-002, ADR-006). Postgres + MS SQL Server are the two
-# self-hosted RDBMS sources; SAP HANA Cloud and Teradata are owner-provisioned cloud instances
-# (ADR-006) and are NOT run here. No literal secrets — every value comes from .env
+# self-hosted RDBMS sources; Salesforce and Teradata are owner-provisioned cloud instances
+# (ADR-006, ADR-006 Add #2) and are NOT run here. No literal secrets — every value comes from .env
 # (gates/framework.yml -> governed_paths matches this file; see journey/09_SECURITY_AND_ACCESS.md).
 services:
   postgres:

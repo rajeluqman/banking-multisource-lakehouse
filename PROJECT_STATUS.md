@@ -2,7 +2,261 @@
 
 ## ▶ RESUME HERE (read this first)
 
-**2026-07-14 — LATEST (front of queue): source #4 swapped SAP HANA Cloud → Salesforce**
+**2026-07-15 (third session, later same day) — LATEST: ALL 5 SOURCES LIVE, 10/10 BUSINESS
+QUESTIONS PROVEN. Full detail: `journey/08_SERVING_AND_EVIDENCE.md`, `BUILD_REPORT.md` §15.**
+Summary:
+
+- Salesforce org setup was completed by the owner mid-session (live-reverified via `describe()`
+  — 100% clean); Teradata's ClearScape environment was found live (resumed by the owner between
+  sessions, confirmed via a real connection, not assumed) and brought in this session with
+  explicit owner approval since it was originally out of scope; OBP was rewritten from scratch
+  to pull real public-sandbox demo data instead of the always-empty `/my/accounts` endpoint
+  (also owner-approved, since it wasn't in the original kickoff scope either).
+- **14 real, previously-undetected bugs found and fixed** by actually running this pipeline
+  end-to-end for the first time against all 5 sources — full list + fix rationale in
+  `journey/08_SERVING_AND_EVIDENCE.md`. Two were serious enough to have silently corrupted every
+  customer-level Gold number: `fact_txn`/`fact_card_fraud`'s PaySim legs joined a Silver column
+  MASKED per D-07 against an UNMASKED crosswalk key (100% NULL `customer_id` for 20,000+ rows),
+  and `seed/build_xwalk.py` sampled PaySim customer IDs from a completely different random draw
+  than what was actually seeded into MSSQL (different RNG namespace — ~62/20,000 real overlap).
+  Both fixed, reverified with 0 NULL `customer_id` and a 100% xwalk↔MSSQL overlap; required a
+  full downstream rebuild (`dim_customer_xwalk` → `dim_customer` → `fact_txn`/`fact_card_fraud`
+  → every dependent mart) plus a Teradata re-seed (its `customer_id` assignment used the old,
+  broken xwalk).
+- Salesforce also needed a real live-diagnosed fix beyond org setup: the Developer Edition org's
+  5MB `DataStorageMB` cap silently rejected most of the previous session's `--sample 5000` load
+  (Bulk API 2.0 returns HTTP success even on 100% server-side failure) — rearchitected
+  `seed/salesforce/load_berka.py` to a small, ACCOUNT-rooted coordinated sample (150 accounts)
+  instead of independently sampling every table, fixed real failure-reporting, and fixed a
+  genuine Salesforce platform rule (a Contact needs a primary `AccountId` before any additional
+  `AccountContactRelation` can be created for it) that wasn't a Setup-UI issue at all.
+- Teradata's CDC DDL (`seed/common/cdc_ddl.py`) had never been run against real Teradata before
+  this session — it was written against SAP HANA syntax (`CREATE COLUMN TABLE`, bare
+  `GENERATED ALWAYS AS IDENTITY`, bare `BEGIN`, `:alias.col` references) and needed 4 separate
+  live-verified syntax corrections before insert/update/delete triggers actually fired.
+- **mart_pipeline_health now shows `reconciled=true` for all 5 sources — no Slack alert fired**,
+  the first time this has been true for this project. All 4 gates + `unittest discover tests`
+  green.
+- OBP has real data now (20 accounts, 183 transactions from the public sandbox) but no Gold mart
+  currently reads it — wiring it into a mart was out of scope this session (not requested,
+  would need product/scope sign-off first).
+
+**Next session**: no known blockers remain on any of the 5 sources. Candidate next work: decide
+whether OBP's real public-sandbox data should feed a new/existing mart (scope decision, not a
+technical blocker); Fasa E (Snowflake/Power BI serving veneer, optional); canonical Databricks
+trial run for screenshot evidence (D-01 Add #3, still deferred — dev-loop local Spark is what
+every session so far has actually exercised).
+
+**2026-07-15 (second session, later same day) — LATEST: `NEXT_BUILD_KICKOFF.md` EXECUTED for
+real. First actual Fasa A→D run against live infrastructure (Docker Postgres/MSSQL, real Kaggle
+downloads, local Spark+Delta) — PARTIAL: Postgres/MSSQL/OBP live end-to-end through Gold;
+Salesforce and Teradata genuinely blocked on owner-only actions (confirmed live, not assumed).
+All 4 gates + `unittest discover tests` green. Full detail: `BUILD_REPORT.md` §14,
+`journey/08_SERVING_AND_EVIDENCE.md`.** Summary:
+
+- **Datasets downloaded for real** (`scripts/fetch_datasets.py`, after fixing 2 wrong/guessed
+  Kaggle slugs — Berka's guessed slug didn't exist at all; Home Credit's was actually a
+  *competition* slug needing rules accepted on kaggle.com, no API path, 401'd live). Real Home
+  Credit (307,511 apps), PaySim (6.36M txns, 6.9M unique customer ids), Berka (account/card/
+  client/disp/district/loan/order/trans), UCI Bank Marketing (45,211 rows) all on disk.
+- **Docker Postgres 16 + MS SQL Server 2022 stood up and seeded** (`--sample 5000`/`--sample
+  20000` per D-14 dev-loop scale — full Kaggle-scale data, e.g. PaySim's 6.36M rows or Home
+  Credit's 13.6M-row `installments_payments`, is far past dev-loop scale). Fixed a real MSSQL
+  container bootstrap failure (weak default password rejected by SQL Server's complexity
+  policy) and a missing system ODBC driver (`msodbcsql18`, installed via apt).
+- **Local Spark 3.5.3 + Delta 3.2.1 made to work for the first time ever in this repo** — this
+  had literally never been run before (every prior session explicitly deferred to "the owner's
+  dedicated Codespace"). Found and fixed: JDK 25 incompatibility (Spark's Hadoop client calls a
+  removed Security Manager API — installed JDK 17 alongside, `JAVA_HOME`-scoped, system default
+  untouched), missing Delta/Postgres/MSSQL JDBC jars in `pipeline/common/spark_session.py` (now
+  resolved via Maven coordinates in local mode; `pyspark`/`delta-spark` added to
+  `requirements.txt` — another real reproducibility gap, same class as the 2026-07-14 session's
+  boto3/kaggle fixes).
+- **Salesforce/Teradata confirmed still blocked, live, not assumed**: a real `describe()` audit
+  showed the Salesforce org still lacks every custom object/field this build needs (unchanged
+  from `BUILD_REPORT.md` §13); a real Teradata connection attempt timed out (ClearScape
+  suspended, needs an owner dashboard resume, no API to do this). Both skipped per
+  `NEXT_BUILD_KICKOFF.md`'s own explicit fallback instruction, not silently worked around.
+- **8 real, previously-undetected bugs found and fixed** by actually running this pipeline for
+  the first time (full list + evidence: `journey/08_SERVING_AND_EVIDENCE.md`) — most
+  significant: **all 14 `pipeline/gold/*.py` builder modules were missing the `main() -> int`
+  entrypoint** `pipeline/orchestrate.py`'s contract requires; every Gold stage would have
+  crashed with `AttributeError` the first time the orchestrator ever tried to run one. Also
+  fixed the pre-existing, previously-flagged R-30 defect (`mart_pipeline_health.py`'s Silver
+  row-count path bug) — confirmed live and fixed, `postgres`/`mssql` now correctly show
+  `reconciled=true`.
+- **Real Gold output for BQ-02 (mart_fraud_daily), BQ-04 (mart_loan_funnel), BQ-10
+  (mart_pipeline_health)** — actual command output pasted into `journey/08_SERVING_AND_
+  EVIDENCE.md`, marked PROVEN, not just built. BQ-01/03/05/06/07/08/09 remain UNVERIFIED —
+  blocked on `dim_customer`/`fact_txn`, which need Salesforce's `silver_crm` output.
+- **A real Slack alert fired** from `mart_pipeline_health`'s reconciliation check (Salesforce/
+  Teradata/OBP correctly flagged as unreconciled, no data) — owner explicitly chose to let it
+  fire rather than suppress it, since it's an accurate signal, not a false alarm.
+
+**Next session**: once the owner has done the Salesforce org setup (`BUILD_REPORT.md` §13's
+checklist) and resumed the Teradata ClearScape environment, re-run `seed/salesforce/
+load_berka.py` → `pipeline/extract/salesforce_extract.py` → `pipeline/silver/silver_crm.py` and
+`seed/teradata/load_bank_marketing.py` → `pipeline/extract/teradata_extract.py` →
+`pipeline/silver/silver_marketing.py`, then the 7 still-blocked Gold stages (`dim_customer`,
+`fact_txn`, `mart_customer_360`, `mart_cross_sell`, `mart_daily_flows`, `mart_dormancy`,
+`mart_risk_segment`, `mart_fraud_followup`) for a genuinely complete Fasa A→D proof.
+
+**2026-07-15 (first session) — `NEXT_BUILD_KICKOFF.md`'s 6-task Salesforce-swap BUILD was
+code-complete but NOT yet executed. All 4 gates + `unittest discover tests` green. Full detail:
+`BUILD_REPORT.md` §13.** Summary:
+
+- All 6 tasks done: source-key rename (`sap_hana`→`salesforce`, zero live-code hits left),
+  `seed/salesforce/load_berka.py` (Bulk API 2.0 insert lifecycle + synthetic Case generation),
+  `pipeline/extract/salesforce_extract.py` + new `pipeline/extract/salesforce_auth.py` (Client
+  Credentials Flow — `simple_salesforce`'s own login doesn't support this grant type, verified
+  by reading its source), `silver_crm.py` rewritten (6 builders) + `mart_fraud_followup.py`
+  updated to consume the real Case timestamp, `orchestrate_config.yml`/`drip_feed.py` updated,
+  `mart_pipeline_health.py` source map fixed.
+- **Real gap surfaced mid-build, resolved WITH the owner (AskUserQuestion), not silently**:
+  Task 2's 4-object Salesforce mapping had no home for Berka's `trans` (needed by `fact_txn.py`
+  → BQ-01/BQ-06, P0) or `district` (R-03 orphan-check). Owner chose to add 2 new custom Salesforce
+  objects (`Transaction__c`, `District__c`) rather than drop/redesign the P0 fact. `card`/`loan`
+  dropped (unused downstream, disclosed).
+- **A live describe()-based audit of the real org (not guesswork) found the actual live-org gap
+  is LARGER than Task 2 assumed**: `AccountContactRelation` doesn't exist in this org at all
+  (needs "Contacts to Multiple Accounts" enabled in Setup — an org toggle, not just a field);
+  none of the new custom fields on Contact/Account exist yet; `Transaction__c`/`District__c`
+  don't exist yet; `Case.Type` picklist needs 3 new values; `Case.CreatedDate` isn't API-settable
+  without "Set Audit Fields upon Record Creation" enabled. Full checklist: `BUILD_REPORT.md` §13.
+- **Consequence**: a live seed/extract run against Salesforce will fail today until the owner
+  does the org setup above — not attempted (would be faking success). Postgres/MSSQL Docker
+  still not started; Teradata still needs a ClearScape dashboard resume. `journey/08_SERVING_
+  AND_EVIDENCE.md` NOT updated this session — no real Fasa A→D run exists yet to record.
+- **Pre-existing bugs found this session, one fixed one flagged-not-fixed** (neither is new
+  scope creep — both surfaced while rewriting/touching the exact same files for the swap): (1)
+  FIXED — the old `silver_crm.py` masked `trans.account_id` but not `disp.account_id`, which
+  would have silently broken `fact_txn.py`'s join; account_id is now unmasked everywhere as a
+  join key, `trans.partner_account` masked instead. (2) NOT FIXED, flagged — `mart_pipeline_
+  health.py`'s `_row_count` reads Silver via `layer_path("silver", source, table)` (adds a
+  `source` segment) but `merge_upsert` actually writes Silver at `layer_path("silver", table)`
+  (no source segment) — affects ALL 5 sources' `silver_row_count`/`reconciled` columns, a real
+  BQ-10 (R-30) defect, out of scope for a source-swap task to silently redesign.
+
+**Next session**: owner does the live-org setup listed in `BUILD_REPORT.md` §13, then re-run
+`seed/salesforce/load_berka.py` → `salesforce_extract.py` → `pipeline/promote/promotion_gate.py`
+→ `pipeline/silver/silver_crm.py` for a real Fasa A→D proof; also stand up Postgres/MSSQL Docker
+and resume Teradata's ClearScape environment for the other two live sources; consider fixing the
+`mart_pipeline_health.py` Silver-path bug (item 2 above) since it blocks BQ-10 reconciliation
+being trustworthy for any source, not just Salesforce.
+
+**2026-07-14 — ALL 8 credential/infra services provisioned + an Opus
+verify pass re-confirmed 6/7 live; `ADR-002` Addendum #2 written (Databricks AWS→Azure switch);
+`requirements.txt` reproducibility gap fixed. The `NEXT_BUILD_KICKOFF.md` code build (6 tasks)
+still has NOT started.** Two sessions on 2026-07-14: a Sonnet setup session (batch 1 =
+Salesforce/Teradata/OBP/Kaggle, then batch 2 = AWS/Slack/Snowflake/Databricks), then an Opus
+verify/ADR session. The detailed batch-1 block is retained below; this block adds batch 2, the
+Databricks decision, and the independent verify result.
+
+- **Opus verify pass (independent re-run, not trusting the summary): 6/7 live-PASS.** Re-ran a
+  consolidated smoke test hitting Salesforce, Teradata, OBP, Kaggle, AWS S3, Snowflake, Databricks
+  (Slack skipped — a re-POST would spam the channel; its prior `200 OK` is unambiguous). Salesforce
+  (custom fields still present), OBP, Kaggle, AWS S3 (write/read/delete round-trip), Snowflake,
+  Databricks all PASS. **Teradata FAILED with a socket i/o-timeout — this is EXPECTED and benign:
+  ClearScape free-tier environments auto-stop on idle (owner-confirmed). Credentials are correct
+  (they connected earlier this session); the environment is merely suspended. ACTION before any
+  next live run: resume the ClearScape environment in its dashboard first.**
+- **AWS S3**: bucket `banking-lakehouse-pipeline`, IAM user access key in `.env`. Full
+  read/write/delete round-trip verified via `boto3` (and again cross-cloud from the Databricks
+  cluster). This is the real `s3://<bucket>/banking/` sole-source-of-truth from ADR-002; the
+  local-disk fallback in `pipeline/common/lake_paths.py` is now optional, not forced.
+- **Slack**: `SLACK_WEBHOOK_URL` filled; a test POST returned `200 ok` and landed a real message
+  (the failure-alert path in `journey/07_PIPELINE_SPEC.md` "Failure handling").
+- **Snowflake**: free trial (Standard, **AWS AP_SOUTHEAST_5** region — same-cloud as the S3 bucket,
+  good for future external tables). Connected via `snowflake-connector-python`; `SELECT
+  CURRENT_VERSION()` → `10.24.101`. Fasa E / serving only — not needed until Gold exists.
+- **Databricks → AZURE, not AWS (major decision, now `ADR-002` Add #2).** AWS-hosted Databricks was
+  attempted first and blocked twice on the owner's account (instant trial gives SQL-warehouse-only
+  compute, cannot run PySpark; "connect-your-own-AWS"/Marketplace both hit *"free plan not eligible
+  to purchase paid offers"*). Switched to **Azure Databricks** (Premium tier, isolated Resource
+  Group, single-node cluster, 20-min auto-terminate). UC metastore auto-attached; default catalog
+  `banking_lakehouse_dbx` visible. **Cross-cloud S3 read+write verified live from the cluster.**
+  KEY LIMITATION, documented in `ADR-002` Add #2: **Unity Catalog on Azure Databricks can only
+  register an AWS S3 external location READ-ONLY** (hard Microsoft-documented platform limit, not a
+  trial/config issue). So the pipeline's S3 writes use **cluster-level Spark/boto3 creds** (AWS keys
+  as cluster env vars), NOT UC-governed — i.e. Gold's "Unity Catalog governed" property does not
+  hold for the S3 data path under this host. Named gap, not hidden. S3-as-truth + Snowflake serving
+  story unaffected.
+  - ⚠ **Cost note**: the Databricks cluster was still `RUNNING` at verify time. 20-min idle
+    auto-terminate is set, but the owner can stop it manually in the workspace (or ask an assistant
+    with `DATABRICKS_HOST`/`DATABRICKS_TOKEN` to stop it) to conserve trial credit between sessions.
+- **`requirements.txt` fixed (was a reproducibility gap):** added `simple-salesforce`, `boto3`,
+  `snowflake-connector-python`, `databricks-sdk`, `kaggle` (all pip-installed ad-hoc during setup,
+  none were recorded — a fresh environment couldn't have run any connection code). `hdbcli` (dead
+  SAP HANA driver) is intentionally LEFT for now — `drip_feed.py` / `sap_hana_extract.py` /
+  `seed/sap_hana/load_berka.py` still import it; remove it as part of Task 1/3's rename+delete.
+- **Databricks driver install caveat** (same failure class as `teradatasql` §11): `databricks-sdk`
+  command-execution needs a context — `create_and_wait` a context first, then `execute_and_wait`
+  with `context_id`, else you get `missing contextId`. Recorded so the next session doesn't
+  re-derive it.
+
+**Next session (unchanged target, refined pointers)**: execute `NEXT_BUILD_KICKOFF.md`'s 6 tasks.
+Reminders: (1) resume the ClearScape Teradata environment before any live Teradata run; (2) the
+Salesforce auth-flow doc-correction (Client Credentials Flow, not username-password — in `ADR-006`
+Add #2, `.env.example`, `journey/07_PIPELINE_SPEC.md`) is still owed, do it with Task 3; (3)
+Postgres + MS SQL Server (Docker) were never set up this session — stand them up before their
+extractors can run live; (4) live creds now exist for a real Fasa A→D run — capture real evidence
+into `journey/08_SERVING_AND_EVIDENCE.md`, don't settle for dev-loop-only.
+
+**2026-07-14 — batch-1 setup detail (Salesforce/Teradata/OBP/Kaggle):** This session did the
+prerequisite infra/credential setup the prior session's hand-off asked for, walked
+interactively with the owner (trial signup, Connected App / External Client App config,
+ClearScape provisioning, OBP sandbox registration, Kaggle key) — see the four live smoke-test
+results below. `.env` is filled with real values (never pasted into chat; only lengths/
+structure were inspected to debug auth failures). Postgres/MSSQL (Docker) were NOT touched
+this session — still open.
+
+- **Salesforce**: connected via **Client Credentials Flow** (Consumer Key + Secret + My Domain
+  host only — NOT the username-password/ROPC flow `ADR-006` Addendum #2 and `.env.example`
+  currently describe). Root cause chain worked through live, in order: (1) SOAP login (triggered
+  by passing `security_token`) is disabled by default on this org → (2) REST OAuth "password"
+  grant needs password+token concatenated, not passed separately, still got `invalid_grant` → (3)
+  this org's **External Client App** model doesn't expose a Username-Password flow toggle at all
+  (Salesforce has been deprecating ROPC for new apps) → (4) switched to **Client Credentials
+  Flow**, enabled it in Settings → Flow Enablement, set **Run As** to the owner's own System
+  Administrator user (`rdjluqman.av1.28b711d79d51@agentforce.com` — Salesforce auto-suffixed the
+  username domain to `agentforce.com`, confirmed via Setup → Users this is still the real admin
+  account, not a restricted service user) → connected successfully. Verified live: `sf.query()`
+  ran, and both `Contact.birth_number__c` / `Contact.berka_client_id__c` custom fields (created
+  manually via Object Manager, per `journey/05_STTM.md`'s Berka→Salesforce mapping) were
+  confirmed present via `Contact.describe()`. **Doc-correction owed, not yet made**: `ADR-006`
+  Add #2, `.env.example`'s Salesforce comment, and `journey/07_PIPELINE_SPEC.md`'s "OAuth
+  username-password flow" line all need updating to say Client Credentials Flow — do this
+  alongside Task 3 (`salesforce_extract.py`) in the next session, don't silently build against
+  the stale doc language.
+- **Teradata**: provisioned via **ClearScape Analytics Experience** (not Vantage Express — avoids
+  the VM/network-exposure setup R-39 warns about; ClearScape gives a directly internet-reachable
+  hosted instance). Connected live with `teradatasql.connect(host, user, password)` — only those
+  three vars needed (confirmed by reading `pipeline/extract/teradata_extract.py`, no separate
+  database/port var required). Note: the `teradatasql` pip install was initially broken/
+  incomplete in this environment (installed package had only README/samples, no driver code,
+  `teradatasql.connect` raised `AttributeError`) — fixed with `pip install --force-reinstall
+  --no-cache-dir teradatasql`, now `teradatasql==20.0.0.63`. `requirements.txt`'s `>=17.20` pin
+  is satisfied.
+- **OBP (Open Bank Project sandbox)**: registered a sandbox user + a Consumer (Public app type,
+  DirectLogin doesn't use a client secret) via the API Explorer's "Register a consumer" form.
+  Connected live using the REAL `pipeline/extract/obp_client.py` code (not a reimplementation):
+  `OBPClient()._get_direct_login_token()` succeeded, `_request("/obp/v4.0.0/my/accounts...")`
+  returned 0 accounts (expected — brand-new sandbox user, no seeded data, not an error).
+- **Kaggle**: API key obtained and verified — `KaggleApi().authenticate()` + `dataset_list(search=
+  "home credit default risk")` returned 20 results live. Closes part of the original "Known
+  blocker" (no Kaggle API credentials) named in `CLAUDE.md` and `BUILD_REPORT.md` §8.1 — the
+  Kaggle CSVs themselves (Home Credit, PaySim) still haven't been downloaded into this repo, that
+  remains next-session work.
+
+**Next session**: execute `NEXT_BUILD_KICKOFF.md`'s 6 tasks for real (source-key rename,
+`seed/salesforce/load_berka.py`, `pipeline/extract/salesforce_extract.py`, `silver_crm.py` +
+`sil_crm_case`, orchestration config, health-mart source map), fix the Salesforce auth-flow doc
+language named above, then run the 4 gates + `unittest discover tests`, and — since live,
+verified credentials now exist for 4 of 5 sources — actually run Fasa A→D live (not just
+code-written) and capture real evidence into `journey/08_SERVING_AND_EVIDENCE.md` per the
+existing hand-off note below.
+
+**2026-07-14 (earlier this same date) — source #4 swapped SAP HANA Cloud → Salesforce**
 (Developer Edition; still the CRM role; Berka stays the seeded data + golden-record keystone,
 ADR-005 L26). Driver: SAP BTP signup blocked by a mobile-OTP wall; Salesforce Dev Edition is
 free/email-verified, the #1 CRM, and adds a genuinely new SaaS-API-ingestion skill. Ingestion =

@@ -31,7 +31,12 @@ def build(spark: SparkSession, xwalk_csv_path: str = "seed/artifacts/dim_custome
     df.write.format("delta").mode("overwrite").save(layer_path("gold", "dim_customer_xwalk"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("dim_customer_xwalk"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

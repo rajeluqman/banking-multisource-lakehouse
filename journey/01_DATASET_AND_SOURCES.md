@@ -28,9 +28,14 @@ trial-wall accepted as a non-issue for this owner's operating model).
   from the Kaggle CSVs. Fasa B extractors (pipeline/extract/postgres_extract.py,
   pipeline/extract/mssql_extract.py) pull incrementally via `WHERE updated_at > :watermark`.
 - **Salesforce** (owner-provisioned, ADR-006 Add #2): seed/salesforce/load_berka.py authenticates via
-  an OAuth Connected App and loads Berka into standard objects (`client`->Contact with
-  `berka_client_id__c`/`birth_number__c`, `account`->Account, `disp`->AccountContactRelation, tickets->Case).
-  There is NO `_cdc_log` trigger (OLTP SaaS, no DDL-trigger surface -- ADR-006 Add #2). pipeline/extract/salesforce_extract.py
+  Client Credentials Flow (Consumer Key/Secret + My Domain host — NOT username-password, this org's
+  External Client App model doesn't expose that flow, BUILD_REPORT.md §11) and loads Berka into
+  `client`->Contact (`berka_client_id__c`/`birth_number__c`), `account`->Account, `disp`->
+  AccountContactRelation, `trans`->**Transaction__c** (new custom object), `district`->
+  **District__c** (new custom object), tickets->Case (seed-time synthetic — Berka has no native
+  ticket table). `card`/`loan` are intentionally NOT loaded (build-scope note, seed/salesforce/
+  load_berka.py docstring — neither is read by any Gold builder). There is NO `_cdc_log` trigger
+  (OLTP SaaS, no DDL-trigger surface -- ADR-006 Add #2). pipeline/extract/salesforce_extract.py
   runs Bulk API 2.0 query jobs (`WHERE SystemModstamp > :watermark`), tracking its own `SystemModstamp` high-watermark in the lake.
 - **Teradata** (owner-provisioned, ADR-006): seed/teradata/load_bank_marketing.py loads the UCI
   Bank Marketing rows (deterministic sampled linkage to `dim_customer_xwalk`, R-38), same

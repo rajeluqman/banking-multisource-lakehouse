@@ -20,9 +20,12 @@ are the owner's own provisioned instances — never spun up or connected to from
 details arrive via `.env` only when the owner is ready to run the extractor against them.
 
 ## Salesforce / Teradata prerequisites (owner action, before Fasa B can run live)
-1. Provision a Salesforce Developer/trial org — create an OAuth Connected App (enable Bulk API /
-   the `api`+`refresh_token` scopes); note consumer key/secret + refresh token. Salesforce is a
-   public SaaS endpoint — no network-exposure step; R-39 does not apply to source #4 (ADR-006 Add #2).
+1. Provision a Salesforce Developer/trial org — create an External Client App with **Client
+   Credentials Flow** enabled (Setup → Flow Enablement; NOT Username-Password/ROPC — this org's
+   External Client App model doesn't expose that flow at all, live-confirmed BUILD_REPORT.md §11)
+   and a **Run As** user set; note the Consumer Key/Secret + the org's My Domain host (`SALESFORCE_
+   LOGIN_URL`). Salesforce is a public SaaS endpoint — no network-exposure step; R-39 does not apply
+   to source #4 (ADR-006 Add #2).
 2. Provision Teradata (Vantage Express or Teradata Cloud free tier) — network-exposure check (R-39).
 3. `pip install simple-salesforce` (or a Bulk API 2.0 client) + the Teradata Python driver in the
    environment that will run seed/salesforce/load_berka.py / seed/teradata/load_bank_marketing.py.

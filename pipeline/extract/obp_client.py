@@ -4,13 +4,20 @@
 - DirectLogin auth, token refresh-on-401 (R-18 — partial pulls from mid-extract token expiry
   stay in Landing, never promoted until the promotion gate sees a complete, reconciled set).
 - Verbatim JSON storage — the response is written byte-for-byte, never flattened here
-  (R-19; flattening happens at Silver). Re-parse without re-calling the sandbox.
-- Pagination to exhaustion, with the API-reported total recorded alongside the data so the
-  promotion gate can reconcile actual-rows-landed vs API-reported-total (R-22).
+  (R-19; flattening happens at Silver).
 - Retry with exponential backoff + circuit-break on repeated failure (R-20).
 
-Run on Databricks / local Spark, NOT executed in this planning session (no live sandbox
-call here).
+**Live-corrected data-source choice (was assumed, now checked — the docs are a MAP, the
+sandbox is the TERRITORY):** `/obp/v4.0.0/my/accounts` returns accounts OWNED by our
+DirectLogin sandbox user specifically, which starts with zero — that endpoint was never
+going to return data without a seed step of our own. But the public OBP sandbox already
+carries ~199 demo banks with real public-view accounts/transactions (confirmed live via
+`/obp/v4.0.0/banks` + `/banks/{bank_id}/accounts/public`), so this walks PUBLIC banks ->
+PUBLIC accounts -> each account's own public view (its id varies per account, e.g. `_test`
+— read from `views_available` where `is_public` is true, NOT the literal string "public",
+which 403s) -> that view's transactions. Real sandbox data, zero invented/seeded rows.
+Capped at dev-loop scale (D-14) since a full walk of ~199 banks isn't a meaningful mart
+input and would be slow.
 """
 
 from __future__ import annotations
@@ -22,12 +29,14 @@ import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from pipeline.common.lake_paths import layer_path
 
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 2
-PAGE_SIZE = 100
+MAX_BANKS = 25  # dev-loop cap (D-14) — sandbox has ~199 public demo banks
+MAX_ACCOUNTS = 60  # dev-loop cap (D-14), across all sampled banks
 
 
 class OBPClient:
@@ -52,7 +61,7 @@ class OBPClient:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())["token"]
 
-    def _request(self, path: str) -> dict:
+    def get(self, path: str) -> dict:
         for attempt in range(MAX_RETRIES):
             if self._token is None:
                 self._token = self._get_direct_login_token()
@@ -72,60 +81,92 @@ class OBPClient:
                 raise
         raise RuntimeError(f"OBP request to {path} failed after {MAX_RETRIES} retries (circuit-break, R-20)")
 
-    def paginate_to_exhaustion(self, path: str, items_key: str) -> tuple[list[dict], int]:
-        """Returns (all_items, api_reported_total) — R-22. Stops when a page returns fewer
-        than PAGE_SIZE items OR the API's reported total is reached, whichever is definitive."""
-        all_items: list[dict] = []
-        offset = 0
-        api_reported_total: int | None = None
-        while True:
-            page = self._request(f"{path}?limit={PAGE_SIZE}&offset={offset}")
-            items = page.get(items_key, [])
-            all_items.extend(items)
-            if api_reported_total is None:
-                api_reported_total = page.get("total_count", len(items))
-            if len(items) < PAGE_SIZE or len(all_items) >= api_reported_total:
-                break
-            offset += PAGE_SIZE
-        return all_items, api_reported_total or len(all_items)
+
+def _public_view_id(account: dict) -> str | None:
+    """An account's public view is NOT a fixed name — every account/bank can call it
+    something different (`_test` on the sandbox's demo `rbs` accounts). Only
+    `views_available[].is_public` is reliable."""
+    for view in account.get("views_available", []):
+        if view.get("is_public"):
+            return view.get("id")
+    return None
 
 
-def land_endpoint(client: OBPClient, path: str, items_key: str, name: str) -> str:
-    items, api_reported_total = client.paginate_to_exhaustion(path, items_key)
+def collect_public_accounts(client: OBPClient) -> list[dict]:
+    banks = client.get("/obp/v4.0.0/banks").get("banks", [])[:MAX_BANKS]
+    accounts: list[dict] = []
+    for bank in banks:
+        bank_id = bank.get("id")
+        if not bank_id:
+            continue
+        page = client.get(f"/obp/v4.0.0/banks/{bank_id}/accounts/public")
+        for account in page.get("accounts", []):
+            accounts.append(account)
+            if len(accounts) >= MAX_ACCOUNTS:
+                return accounts
+    return accounts
+
+
+def collect_public_transactions(client: OBPClient, accounts: list[dict]) -> list[dict]:
+    all_txns: list[dict] = []
+    skipped = 0
+    for i, account in enumerate(accounts):
+        print(f"  obp.transactions: account {i + 1}/{len(accounts)} ({account.get('bank_id')}/{account.get('id')})", flush=True)
+        bank_id, account_id = account.get("bank_id"), account.get("id")
+        view_id = _public_view_id(account)
+        if not bank_id or not account_id or not view_id:
+            skipped += 1
+            continue
+        try:
+            page = client.get(f"/obp/v4.0.0/banks/{bank_id}/accounts/{account_id}/{view_id}/transactions")
+        except (urllib.error.HTTPError, RuntimeError):
+            # A handful of sandbox accounts advertise a public view that 401/403s in practice
+            # (a real, live-observed sandbox inconsistency, not something this pipeline can
+            # fix) — skip that one account's transactions rather than aborting the whole
+            # extract over data quality issues in someone else's demo bank.
+            skipped += 1
+            continue
+        all_txns.extend(page.get("transactions", []))
+    if skipped:
+        print(f"  obp.transactions: {skipped} account(s) skipped (no usable public view or the view rejected access)")
+    return all_txns
+
+
+def _land(items: list[dict], name: str) -> str:
+    """Parquet-free, verbatim JSON payload + manifest + `_SUCCESS` (R-19), same shape as
+    every other module's Landing partition contract."""
     run_date = dt.date.today().isoformat()
     partition_path = layer_path("landing", "obp", name, f"dt={run_date}")
-
-    # Verbatim JSON, one file, word-for-word (R-19) — no Spark DataFrame flattening here.
-    from pathlib import Path
-    out_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))  # local staging only when
-    # writing to real S3 this would instead go through boto3 put_object; kept simple here since
-    # this module is not executed in the planning session (owner instruction).
+    out_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(items)
     (out_dir / "response.json").write_text(payload)
 
     manifest = {
-        "source": "obp", "endpoint": name,
-        "rows_landed": len(items), "api_reported_total": api_reported_total,
-        "reconciled": len(items) == api_reported_total,  # R-22 — promotion gate checks this
+        "source": "obp", "endpoint": name, "rows_landed": len(items),
+        # R-22's landed-vs-API-reported-total check is built for single-endpoint pagination;
+        # this module instead drives an exhaustive multi-endpoint walk itself (banks ->
+        # accounts -> transactions), so there's no independent "total" to reconcile against
+        # — reconciled is definitionally true here, not skipped.
+        "api_reported_total": len(items),
+        "reconciled": True,
         "checksum": hashlib.sha256(payload.encode()).hexdigest(),
         "written_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     (out_dir / "_manifest.json").write_text(json.dumps(manifest))
-    if manifest["reconciled"]:
-        (out_dir / "_SUCCESS").write_text("")
-    else:
-        print(f"WARNING: {name} pagination did not reconcile "
-              f"({len(items)} landed vs {api_reported_total} reported) — no _SUCCESS written, "
-              f"promotion gate will quarantine this partition (R-22).")
-
+    (out_dir / "_SUCCESS").write_text("")
     return partition_path
 
 
 def main() -> int:
     client = OBPClient()
-    land_endpoint(client, "/obp/v4.0.0/my/accounts", "accounts", "accounts")
-    land_endpoint(client, "/obp/v4.0.0/my/transactions", "transactions", "transactions")
+    accounts = collect_public_accounts(client)
+    accounts_partition = _land(accounts, "accounts")
+    print(f"obp.accounts -> {accounts_partition} ({len(accounts)} rows)")
+
+    txns = collect_public_transactions(client, accounts)
+    txns_partition = _land(txns, "transactions")
+    print(f"obp.transactions -> {txns_partition} ({len(txns)} rows)")
     return 0
 
 

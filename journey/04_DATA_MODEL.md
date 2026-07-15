@@ -14,7 +14,7 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `sil_bureau` | one row per bureau-reported credit line | External credit bureau record | Silver |
 | `sil_previous_application` | one row per prior loan application | Prior application | Silver |
 | `sil_card_txn` | one row per PaySim transaction | Card/mobile-money transaction | Silver |
-| `sil_client` / `sil_account` / `sil_disp` / `sil_card` / `sil_loan` / `sil_trans` / `sil_district` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product (now sourced from Salesforce standard objects — Account/Contact/AccountContactRelation, ADR-006 Add #2) | Silver |
+| `sil_client` / `sil_account` / `sil_disp` / `sil_trans` / `sil_district` / `sil_crm_case` | one row per Berka source-table record (native Berka grain preserved) | CRM customer/account/product (sourced from Salesforce Contact/Account/AccountContactRelation/Transaction__c/District__c/Case, ADR-006 Add #2 — `card`/`loan` intentionally not carried into this build, build-scope note, neither read by any Gold builder) | Silver |
 | `sil_crm_case` | one row per Salesforce Case (CRM ticket) | CRM support / fraud-follow-up ticket (ADR-006 Add #2 — resolves BQ-03's journey/03 L8 gap) | Silver |
 | `sil_obp_accounts` / `sil_obp_transactions` | one row per OBP account / transaction | Core banking account/transaction | Silver |
 | `sil_campaign_response` | one row per Teradata Bank Marketing record (post-xwalk-linkage) | Marketing/campaign response (ADR-006) | Silver |

@@ -53,3 +53,55 @@ Fabric-trial-wall lesson.
   decision above (Databricks still does all Landing→Bronze→Silver→Gold transform; S3 stays sole
   truth; Snowflake stays the serving veneer) — it only adds two more source systems upstream of
   Landing. Full rationale: `ADR-006-real-sap-hana-teradata-cdc-showcase.md`.
+
+- **2026-07-14 (Addendum #2) — Databricks host: AWS → Azure. Owner override, forced by a
+  provisioning blocker; ratified. Consequence: Unity Catalog does NOT govern the S3 path under
+  this pairing (read-only limitation), so the Decision's "governed by Unity Catalog over S3
+  external locations" (line 18) is amended below.**
+  The transform engine is unchanged — **still Databricks, still portable PySpark + Delta, still
+  writing to the same S3 `s3://<bucket>/banking/` as sole truth.** Only the cloud the Databricks
+  workspace is *hosted in* moves from AWS to Azure. Live-verified this session (write+read+delete
+  round-trip from an Azure Databricks cluster into the AWS S3 bucket; see `BUILD_REPORT.md` §12).
+  - **Why the move (blocker, not preference).** The AWS-hosted Databricks path was attempted first
+    (it is the same-cloud ideal — see the amended consequence below). Two AWS routes both dead-ended
+    on the owner's account: (a) the instant/managed free trial provisions **only serverless SQL
+    warehouses**, which cannot run this repo's `pipeline/*.py` PySpark/Delta transforms (SQL-only
+    compute executes SQL, not arbitrary Python/Spark jobs); (b) the "connect your own AWS account"
+    trial and the AWS Marketplace subscription both failed with *"Accounts with the free plan are
+    not eligible to purchase paid offers"* — an AWS account-maturity gate (needs a verified
+    payment method with purchase history), unrelated to Databricks or this project, and not
+    resolvable in-session. Azure Databricks (Premium tier, required for Unity Catalog) provisioned
+    cleanly into an isolated Resource Group, with a UC metastore auto-attached and a running
+    single-node cluster (20-min auto-termination — the disposable-trial discipline of D-01 Add #3,
+    now realized as "delete the Azure Resource Group" rather than "delete the AWS workspace").
+  - **Amended consequence — the "Unity Catalog governs S3" claim is now PARTIAL, and this is a
+    named gap, not a silent one.** On an **Azure-hosted** Databricks workspace, Unity Catalog can
+    register an AWS S3 bucket as an external location **read-only** — this is a hard,
+    Microsoft-documented platform limitation ("Support for S3 in Azure Databricks is read-only",
+    learn.microsoft.com/azure/databricks .../s3-external-location-manual, verified 2026-07-14), NOT
+    a configuration we can toggle or a trial restriction. It applies at any price tier. Same-cloud
+    (AWS Databricks + AWS S3) would give full UC-governed read+write; the cross-cloud Azure→S3
+    pairing does not. Because the medallion **writes** at every layer (Landing→Bronze→Silver→Gold),
+    a read-only governed credential cannot carry the pipeline. **Resolution adopted:** S3 read+write
+    uses **cluster-level Spark/boto3 credentials** (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+    as cluster env vars — the same key pair already in `.env` for the local dev loop), which is
+    exactly the "path-based, UC-catalog-vs-path config switch" portability escape hatch the
+    Decision (line 26–29) already mandates. **What this costs:** the Gold-layer "Unity Catalog
+    governed" property named in `CLAUDE.md`'s stack table and leaned on in the "why not AWS Glue"
+    rejection (unified lineage/access over the lake) does **not** hold for the S3 data path under
+    this host — UC governs its own default (Azure-backed) catalog storage, but the project's S3
+    Gold tables are path-based Delta, outside UC lineage/RBAC. Reading *can* still be UC-governed
+    later (e.g. for BI consumers) via a read-only external location; writing cannot. The
+    multi-engine "S3 as neutral truth, Databricks + Snowflake both read it in place" story
+    (Decision line 19) is **fully preserved** — that never depended on UC governing the write path.
+  - **What is NOT changed:** S3 remains sole source of truth; Snowflake remains the serving veneer
+    (Snowflake's own AWS-region external tables over Gold S3 are unaffected — Snowflake reads S3
+    natively, no UC involved); portable-PySpark discipline (no DLT, gate-enforced) is unchanged and
+    now doubly load-bearing since path-based access is the actual runtime path; the disposable/
+    timeboxed cost posture is unchanged (Azure Databricks bills pay-as-you-go through the Azure
+    subscription, contained in one deletable Resource Group; the AWS SQL-only trial is abandoned,
+    no migration needed — Databricks accounts do not share state across clouds).
+  - **What this addendum does NOT decide (routed, not assumed):** whether to *also* stand up a
+    read-only UC external location over Gold S3 for governed BI reads is deferred to Fasa E when/if
+    Snowflake-vs-Databricks-SQL serving is chosen (Decision "does NOT decide" clause, line 45); the
+    `USE_UNITY_CATALOG` switch in `.env` stays `false` (path-based) for the build/dev loop.

@@ -32,12 +32,34 @@
 | district_id | string | Berka `client` | district_id | passthrough, FK to `sil_district` | Yes (R-03 orphan check) |
 
 ### Target: `silver.sil_crm_case` (Salesforce Case — CRM ticket, ADR-006 Add #2, BQ-03 enrichment)
+> **Correction (this build session): `client_id`, not `customer_id`.** `customer_id` only
+> exists in `gold.dim_customer_xwalk` — a Silver table resolving it directly would invert
+> the medallion's Silver->Gold dependency direction (ADR-003). `sil_crm_case` keeps
+> `client_id` (native Berka key) at Silver, same as every other CRM Silver table;
+> `pipeline/gold/mart_fraud_followup.py` does the `client_id` -> `customer_id` xwalk join
+> itself, exactly as it already did against `sil_client`.
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
 |---|---|---|---|---|---|
 | case_id | string | Salesforce `Case` | Id | passthrough (PK) | No |
-| customer_id | string | Salesforce `Case` | ContactId — Contact `berka_client_id__c` — xwalk | resolved to bank-wide customer_id via the xwalk `berka_client_id` link (deterministic — Berka has a real master, no synthetic assignment) | No |
-| opened_at | timestamp | Salesforce `Case` | CreatedDate | passthrough (UTC) — the real CRM-ticket timestamp BQ-03 previously lacked (journey/03 L8) | No |
-| case_type | string | Salesforce `Case` | Type | passthrough — filter to fraud-follow-up cases for BQ-03 | Yes |
+| client_id | string | Salesforce `Case` | ContactId — resolved via Contact `berka_client_id__c` | Silver-layer join (this table's own transform) recovers the native Berka `client_id` from Salesforce's ContactId lookup — Gold resolves `client_id` -> bank-wide `customer_id` via the xwalk, deterministic (Berka has a real master, no synthetic assignment) | No |
+| opened_at | timestamp | Salesforce `Case` | CreatedDate | passthrough (UTC) — the real CRM-ticket timestamp BQ-03 previously lacked (journey/03 L8); seed-time synthetic (Berka has no native ticket table, seed/salesforce/load_berka.py `_generate_cases`), NOT causally linked to any real fraud event (Berka/PaySim seeded independently) | No |
+| case_type | string | Salesforce `Case` | Type | passthrough — filter to `"Fraud Follow-up"` for BQ-03 | Yes |
+
+### Target: `silver.sil_account` / `sil_disp` / `sil_trans` / `sil_district` (Salesforce Account/AccountContactRelation/Transaction__c/District__c, ADR-006 Add #2)
+> `card`/`loan` (Berka's own tables, distinct from PaySim/Home Credit) are NOT loaded into
+> Salesforce and have no Silver target in this build (build-scope note, seed/salesforce/
+> load_berka.py docstring) — neither is read by any Gold builder.
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| sil_account.account_id | string | Salesforce `Account` | berka_account_id__c | passthrough (PK) | No |
+| sil_account.district_id | string | Salesforce `Account` | berka_district_id__c | passthrough, FK to `sil_district` | Yes (R-03 orphan check) |
+| sil_disp.disp_id | string | Salesforce `AccountContactRelation` | berka_disp_id__c | passthrough (PK) | No |
+| sil_disp.client_id / account_id | string | Salesforce `AccountContactRelation` | ContactId / AccountId | resolved from Salesforce record Ids back to native Berka keys via a Silver-layer join against `bronze.salesforce.contact`/`account` (native N:N bridge kept as a bridge table, not a CTE) | No |
+| sil_trans.trans_id | string | Salesforce `Transaction__c` | berka_trans_id__c | passthrough (PK) | No |
+| sil_trans.account_id | string | Salesforce `Transaction__c` | berka_account_id__c | passthrough (plain text FK, NOT masked — this is the join key `fact_txn.py`/`mart_cross_sell.py`/`mart_daily_flows.py` use to bridge to `sil_disp`) | No |
+| sil_trans.partner_account | string | Salesforce `Transaction__c` | partner_account__c | masked to last-4 (D-07) — this is Berka's own `account` column, a real counterparty bank account number, unlike the `account_id` surrogate join key | Yes |
+| sil_district.district_id | string | Salesforce `District__c` | berka_district_id__c | passthrough (PK) | No |
+| sil_district.name / region | string | Salesforce `District__c` | district_name__c / region__c | passthrough — narrowed field set (not all ~13 Berka district demographic columns; nothing downstream reads them beyond the `district_id` orphan-check) | Yes |
 
 ### Target: `silver.sil_campaign_response` (Teradata — UCI Bank Marketing, ADR-006)
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
