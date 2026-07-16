@@ -100,12 +100,21 @@ doctrine + stack/tool/trade-off strategy; merged the former `@architect` role) �
 Kaggle-API cost watch) · `@cikgu` (optional teaching layer, run as MAIN session not a subagent —
 copied verbatim from CIL's pattern).
 
-## Known blocker (read before Fasa A)
-No Kaggle API credentials and no live AWS/Databricks/Snowflake credentials exist in this build
-environment. The Kaggle CSVs (Home Credit, PaySim, Berka) are NOT on disk anywhere in this
-workspace — confirmed by search, not assumed. See `PROJECT_STATUS.md` "▶ RESUME HERE" and
-`BUILD_REPORT.md` for exactly how the dev-loop seeding was handled given this gap, and what the
-owner still needs to supply for the canonical (real-data, real-cloud) run.
+## Known blocker (read before Fasa A) — PARTIALLY CLEARED 2026-07-16 (ADR-002 Add #5)
+**Update (2026-07-16, live-tested):** the credential gaps below are now CLEARED. `.env` carries
+working `KAGGLE_USERNAME`/`KAGGLE_KEY` (`kaggle datasets list` authenticates, exit 0) and working
+AWS/Databricks creds — **real S3 writes are PROVEN end-to-end** (ADR-002 Addendum #5): Gold Delta
+written to `s3://banking-lakehouse-pipeline/banking/gold/` on a `SINGLE_USER` cluster via
+secret-scope S3A, verified by Databricks read-back + independent `boto3`. What is NOT yet done is
+a full multi-source canonical INGEST (download all datasets → sources → Landing→…→Gold) — that is
+a separate scoped effort (`@finops`/`@scope-guardian`), not a credential blocker.
+
+*Original blocker text (kept for history — no longer true as of 2026-07-16):* No Kaggle API
+credentials and no live AWS/Databricks/Snowflake credentials exist in this build environment. The
+Kaggle CSVs (Home Credit, PaySim, Berka) are NOT on disk anywhere in this workspace — confirmed by
+search, not assumed. See `PROJECT_STATUS.md` "▶ RESUME HERE" and `BUILD_REPORT.md` for exactly how
+the dev-loop seeding was handled given this gap, and what the owner still needs to supply for the
+canonical (real-data, real-cloud) run.
 
 ## Token discipline
 1. Checkpoint first: read `PROJECT_STATUS.md` "▶ RESUME HERE" before reading code.

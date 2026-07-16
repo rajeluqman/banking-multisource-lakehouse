@@ -2,7 +2,85 @@
 
 ## ▶ RESUME HERE (read this first)
 
-**2026-07-15 (fourth session, later same day) — LATEST: R-14/D-12 CURRENCY NORMALIZATION BUILT —
+**2026-07-16 (sixth session) — ✅ REAL S3 WRITES PROVEN END-TO-END. "Known blocker" RESOLVED.
+Plan B executed: `dim_fx_rate` Gold Delta written to `s3://banking-lakehouse-pipeline/banking/
+gold/dim_fx_rate` and verified (Databricks read-back + independent `boto3`). Full detail:
+`ADR-002` Addendum #5, `BUILD_REPORT.md` §19.** Summary:
+
+- Created Databricks secret scope `banking-lakehouse-s3`, loaded AWS key pair by env-var
+  reference (`{{secrets/...}}` templating — no literal secret ever in a command/history), edited
+  cluster `0715-022729-6j0g8jhn` to `data_security_mode=SINGLE_USER`.
+- **New finding: `SINGLE_USER` does NOT bypass a registered read-only UC External Location.**
+  First write to `/banking/gold` failed `PERMISSION_DENIED: cannot write to a read-only external
+  location` — UC intercepts the path before env-var creds are consulted. Proof-of-mechanism to
+  `/_writetest/` (outside any ext-loc) succeeded first (7 objects, boto3-verified).
+- `@staff-data-engineer` ruled Option (a): drop the ext-loc, Gold = path-based Delta (the ADR-002
+  Add #2 canonical resolution — read/write over the same prefix is mutually exclusive given we
+  hold only a read-only Storage Credential). Owner confirmed the specific delete.
+- **Dropped** External Location `databricks-uc-s3-banking-lakehouse-external-location` (metadata
+  only, zero S3 objects deleted; IAM role + Storage Credential KEPT, re-creatable). Real write to
+  `/banking/gold/dim_fx_rate` then **SUCCEEDED** — 4 rows, NULL sentinel preserved, boto3 shows 8
+  objects (`_delta_log`+parquet). `_writetest` cleaned up. Cluster terminated.
+- **Kaggle "blocker" also stale:** `.env` now has working `KAGGLE_USERNAME`/`KAGGLE_KEY`,
+  `kaggle datasets list` authenticates (exit 0). Real-data download unblocked.
+- **R-31:** honored as documented-and-path-based (raw layers never UC-registered, no
+  analyst-reachable cred); live-UC-`GRANT` demo needs same-cloud AWS Databricks, deferred + named
+  (not the drop→recreate→`CREATE EXTERNAL TABLE` dance — staff-DE ruled that a one-shot snapshot
+  gesture, only meaningful after a real frozen canonical run exists).
+
+**Next session**: the S3 WRITE PATH is proven and unblocked. The open big item is a full
+multi-source canonical INGEST (download Kaggle datasets → sources → Landing→Bronze→Silver→Gold to
+S3) — a scoped effort needing `@finops`/`@scope-guardian` sign-off, NOT a credential blocker.
+Independent candidate work: OBP mart wiring, R-41 (Delta OPTIMIZE/Z-ORDER), Fasa E serving.
+
+---
+
+**2026-07-15 (fifth session, later same day) — UC READ-WRITE S3 CONFIRMED IMPOSSIBLE ON
+THIS ACCOUNT (definitive, UI-verified) — owner ruled STAY ON S3, proceed via `SINGLE_USER`
+cluster mode. Decision made, execution deferred to next session. Full detail: `BUILD_REPORT.md`
+§17-18, `ADR-002` Addendum #3-#4.** Summary:
+
+- First pass (§17/Addendum #3): live-diagnosed two platform blockers writing Delta from the
+  Azure cluster to AWS S3 — `crossCloud.fatal` guard (owner-authorized, fixed) and UC's governed
+  filesystem returning anonymous S3 credentials (deeper than Addendum #2's "read-only"
+  prediction). Cluster terminated, zero data written.
+- Owner then did the console/IAM work this named as the fix: created IAM role + trust policy +
+  S3 permissions policy (all correctly configured, verified) and registered a matching UC
+  Storage Credential + External Location. **Definitive finding (§18/Addendum #4): the
+  `Credential Type` dropdown for a new Storage Credential offers only `AWS IAM Role (Read-only)`
+  or `Azure Managed Identity` (ADLS) — no read-write AWS option exists at all in this UI.** Not a
+  misconfiguration, not a toggle — this Azure-hosted Databricks account structurally cannot vend
+  a read-write AWS S3 credential via Unity Catalog. Confirmed by direct UI inspection, not just
+  the doc URL Addendum #2 originally cited.
+- `@staff-data-engineer` trade-off analysis (S3 vs migrating to ADLS, requested mid-session):
+  **ruled stay on S3, do not migrate** — this is a credential-registration problem, not a
+  storage-substrate problem; S3 preserves the resume's "AWS" claim; the Azure-Databricks→AWS-S3→
+  Snowflake cross-cloud pairing is itself a differentiated portfolio skill once closed correctly;
+  migration blast radius is larger than it looks (`s3://` literals in 4 files, would need a full
+  `ADR-002` supersession not an addendum).
+- **Owner ruling (pros/cons discussed directly)**: proceed with `SINGLE_USER` cluster access
+  mode — bypasses UC governance for that cluster's S3 writes, uses the cluster's existing
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars directly. Named consequence: a table
+  written this way isn't automatically a UC-registered catalog object, so
+  `journey/09_SECURITY_AND_ACCESS.md` §3's RBAC role matrix (R-31) won't apply until a follow-up
+  step registers the S3 path as a UC external table (`pipeline/gold/grants/`'s existing DDL
+  pattern) — required, not optional, still pending.
+- Cluster terminated (confirmed `TERMINATED`), no cost left running. S3 bucket still empty —
+  decision made, not yet executed.
+
+**Next session**: execute the `SINGLE_USER` decision — `clusters.edit()` via `databricks-sdk`
+(reuse the `kind=CLASSIC_PREVIEW`+`is_single_node=True` shape already worked out this session),
+retry the `dim_fx_rate` write test (do NOT embed the raw AWS secret in the remote command — the
+cluster env vars should carry it on a `SINGLE_USER` cluster without any inline credential), then
+the R-31 external-table-registration follow-up named above, then decide with the owner whether
+to scale to the full canonical run or stop at the proof point. Cluster name `banking-lakehouse-
+cluster`, IAM role `arn:aws:iam::579880301047:role/databricks-uc-role-banking-lakehouse`, UC
+Storage Credential `databricks-uc-role-banking-lakehouse`, UC External Location `databricks-uc-
+s3-banking-lakehouse-external-location` — all in `ADR-002` Addendum #4 + `BUILD_REPORT.md` §18.
+Independent of the S3 saga: OBP mart wiring, R-41 (Delta OPTIMIZE/Z-ORDER), and Fasa E remain
+untouched candidate next work.
+
+**2026-07-15 (fourth session, later same day) — R-14/D-12 CURRENCY NORMALIZATION BUILT —
 a real, live correctness bug in marts already marked PROVEN is now fixed. Full detail:
 `BUILD_REPORT.md` §16, `journey/08_SERVING_AND_EVIDENCE.md` (BQ-01/BQ-06/BQ-08 evidence lines
 updated with corrected numbers).** Summary:

@@ -19,7 +19,7 @@ explicitly, not a speculative security *program*.
 | Salesforce OAuth (Connected App consumer key/secret + refresh token) | `salesforce_extract.py`, seed loader (ADR-006 Add #2) | Databricks secret scope / `.env` (gitignored) | in code, chat, or committed config — owner supplies via `.env` only |
 | Teradata connection (host/creds) | `teradata_extract.py`, seed loader (ADR-006) | Databricks secret scope / `.env` (gitignored) | same as above |
 | OBP OAuth client id/secret + token | OBP API client | Databricks secret scope | in the landing path or logs |
-| S3 access key (transform) | Databricks ↔ S3 | Unity Catalog storage credential / instance profile | as a long-lived key hardcoded in code |
+| S3 access key (transform) | Databricks ↔ S3 | Databricks secret scope `banking-lakehouse-s3`, referenced via `spark_env_vars` templating on a `SINGLE_USER` cluster (ADR-002 Add #2/#5 — UC storage credential is read-only-only on this Azure account, cannot vend a read-write S3 write path) | as a long-lived key hardcoded in code, or in a command payload / command history |
 | S3 read-only key (serving) | Snowflake external tables | Snowflake storage integration | scoped beyond `banking/gold/`, never write |
 | `BANK_PAT` (git push) | git credential helper | Codespaces secret ($env only) | on disk / in the remote URL |
 
