@@ -16,8 +16,8 @@
 | sk_id_curr | string | Postgres `application` | SK_ID_CURR | passthrough | Yes (not every customer has a loan) |
 | name_orig | string | MSSQL PaySim | nameOrig | passthrough | Yes |
 | berka_client_id | string | Salesforce Contact `berka_client_id__c` (ADR-006 Add #2) | berka_client_id__c | passthrough | Yes |
-| obp_account_id | string | OBP `/accounts` | account_id | passthrough | Yes |
-| source_priority_rank | int | derived | — | CRM=1, core=2, loans=3, cards=4 (ADR-005 survivorship order) | No |
+| obp_account_id | string | OBP `/accounts` | account_id | RESERVED — not populated in v1 (ADR-005 Add #2: OBP is Silver-terminal, not a conformed-dimension member) | Yes |
+| source_priority_rank | int | derived | — | CRM(Berka)=1, loans(Home Credit)=3, cards(PaySim)=4 — rank **2 is a reserved gap** (the withdrawn OBP/"core" tier, ADR-005 Add #2; left un-renumbered so the seeded ranks stay stable). Only relative order matters (`dim_customer.py` `Window.orderBy(source_priority_rank asc)`). OBP never enters the golden record | No |
 
 ### Target: `silver.sil_client` (Berka CRM via Salesforce Contact, ADR-006 Add #2 — golden-record source of DOB/gender)
 > Source object is now Salesforce **Contact** (Berka seeded in, ADR-006 Add #2): `client_id` = Contact

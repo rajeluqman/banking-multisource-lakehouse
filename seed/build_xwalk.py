@@ -31,6 +31,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from seed.common.seeding_utils import seeded_random
 
+# Golden-record survivorship order (ADR-005 Add #2). `obp: 2` is a RESERVED/WITHDRAWN tier — OBP
+# is deliberately Silver-terminal and is NEVER seeded into the xwalk (no obp rows are appended
+# below; line ~139 filters it out of the by_source tally). The rank is left at 2 rather than
+# renumbering home_credit→2/paysim→3 so the existing seeded ranks (1/3/4) stay reproducible; only
+# relative order matters (dim_customer.py Window.orderBy). Effective seeded tiers: berka=1,
+# home_credit=3, paysim=4.
 SOURCE_PRIORITY = {"berka": 1, "obp": 2, "home_credit": 3, "paysim": 4}
 
 # Fraction of a source's customer-shaped identifiers that overlap onto an EXISTING

@@ -4,9 +4,12 @@
 landing, so no SCD/MERGE-on-update semantics, just append of new rows resolved to
 `customer_id` via `dim_customer_xwalk`.
 
-v1 sources: PaySim (`sil_card_txn`) and Berka (`sil_trans`) — OBP transactions join in the
-same shape once the OBP extractor lands data (obp is snapshot-append per journey/01, not a
-volume source).
+v1 sources: PaySim (`sil_card_txn`) and Berka (`sil_trans`). OBP transactions are DELIBERATELY
+excluded from Gold (ADR-005 Add #2): OBP is Silver-terminal — its public-sandbox accounts have no
+conformable customer identity (wiring them in would fabricate identity, R-38), it is a live
+non-seed-deterministic source (D-04), and its multi-currency amounts are outside the `dim_fx_rate`
+seed. `sil_obp_transactions` exists at Silver as a demonstrated REST-ingestion artifact, not a
+fact input. Adding OBP analytics would be a new source-isolated mart via ADR-000, not a union here.
 
 Partitioned by `txn_year`/`txn_month` (ADR-007 D7.4 Strategy 2) — Landing already partitions
 by `dt=` (ADR-003); this extends the same query-pruning principle to Gold so Snowflake/Power

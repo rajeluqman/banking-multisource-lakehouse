@@ -65,11 +65,12 @@ A diagram may be added later as a journey/08 evidence artifact; not required for
 
 ## Identity / grain fidelity
 Cross-source identity = `dim_customer_xwalk` (ADR-005, D-04): one bank-wide `customer_id` per real
-person, mapped to each source's native key. Within a single source, native keys are the identity
-(`SK_ID_CURR`, `nameOrig`/`nameDest`, `client_id`+`account_id`, OBP `account_id`) — no content-hash
+person, mapped to each SEEDABLE source's native key. Within a single source, native keys are the
+identity (`SK_ID_CURR`, `nameOrig`/`nameDest`, `client_id`+`account_id`) — no content-hash
 identity is needed here (unlike CIL's near-duplicate-video problem); the hard problem is
 cross-system resolution, not de-duplication of near-identical content. This is the `identity:`
-block already filled in `gates/framework.yml`.
+block already filled in `gates/framework.yml`. (OBP `account_id` is a Silver-only native key on
+`sil_obp_accounts`, NOT a crosswalk member — OBP is deliberately Silver-terminal, ADR-005 Add #2.)
 
 **Teradata/Bank Marketing exception (ADR-006 D6.2, R-38)**: this source has no native key at all —
 it is not a 5th independent identity to resolve, it is deterministically ASSIGNED an existing
