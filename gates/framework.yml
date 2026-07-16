@@ -79,6 +79,15 @@ boundary:
   profile_files: []
   locked_adapter: ""
 
+  # Entrypoint contract (ADR-002 Addendum #6) — Databricks' git-sourced spark_python_task runner
+  # treats ANY raised SystemExit, including SystemExit(0), as a TASK FAILURE (cascading to
+  # depends_on children). So no pipeline entrypoint may do a bare `raise SystemExit(main(...))` —
+  # it must `_rc = main(...); if _rc != 0: raise SystemExit(_rc)`. Enforced, not left to vigilance.
+  entrypoint_guard:
+    scan_globs: ["pipeline/**/*.py"]
+    banned_regex: 'raise SystemExit\(main\('
+    reason: "ADR-002 Add #6 — Databricks git-sourced spark_python_task treats SystemExit(0) as failure; use `_rc = main(...); if _rc != 0: raise SystemExit(_rc)` instead"
+
   # Free-text ingestion allowlist, informational (not regex-enforced — ingestion mechanism
   # rarely has a clean import signature). Cite in governance/BOUNDARY_CONTRACT.md too.
   ingestion_allowlist:

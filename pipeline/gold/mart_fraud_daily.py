@@ -28,4 +28,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _rc = main()
+    if _rc != 0:
+        raise SystemExit(_rc)

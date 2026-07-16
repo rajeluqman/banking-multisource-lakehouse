@@ -153,4 +153,6 @@ if __name__ == "__main__":
     ap.add_argument("--full-backfill", action="store_true",
                      help="force a full re-pull of every object regardless of watermark state (ADR-007 D7.4 Strategy 1)")
     args = ap.parse_args()
-    raise SystemExit(main(full_backfill=args.full_backfill))
+    _rc = main(full_backfill=args.full_backfill)
+    if _rc != 0:
+        raise SystemExit(_rc)

@@ -57,6 +57,29 @@ sequencer, not a competing scheduler.
   (BQ-10) reads this alongside its row-count reconciliation, so BQ-10 reflects orchestration
   health, not just data counts.
 
+## Databricks execution path (PROVEN 2026-07-16 — ADR-002 Addendum #6)
+`orchestrate.py` above is the local dev-loop sequencer. On Databricks the SAME entrypoints run
+via a **git-sourced Job** — now a real, proven path, not aspirational:
+- **Deployment (git-native, superseding Add #5's ad-hoc command-execution code-shipping):** push
+  to the public GitHub remote → Databricks clones it into a Workspace Repo (`w.repos.create(...,
+  provider="gitHub")`) → a Job (`w.jobs.create`) with `GitSource(git_provider=GIT_HUB,
+  git_branch=...)` runs one `spark_python_task` (`source=Source.GIT`,
+  `python_file="pipeline/.../<entrypoint>.py"`) per stage, `depends_on`-chained. Runs on the
+  `SINGLE_USER` cluster (ADR-002 Add #5, unchanged).
+- **Run-triggering (owner override 2026-07-16):** the agent MAY call `run_now` on the git-sourced
+  Job when the owner explicitly prompts "run" (the prompt is the authorization); it does not
+  auto-trigger unprompted. `run_now` ships zero code (Databricks pulls from git), so it is NOT the
+  BANNED pattern. A future external orchestrator (Airflow, D-10) owns scheduled triggering. Ad-hoc
+  command-execution code-shipping (tar / per-file base64 of `pipeline/`) remains BANNED —
+  harness-blocked, not just discouraged (ADR-002 Add #6).
+- **Proven run:** `pipeline/promote/promotion_gate.py` → Bronze then `pipeline/silver/silver_crm.py`
+  → Silver, `RunResultState.SUCCESS`, both layers independently boto3-verified in S3.
+- **Entrypoint contract (durable Databricks platform fact):** every `__main__` guard must
+  `raise SystemExit(rc)` ONLY when `rc != 0`. Databricks' git-sourced `spark_python_task` runner
+  treats ANY raised `SystemExit` — including `SystemExit(0)` (success) — as a task failure and
+  cascades it to `depends_on` children (ADR-002 Add #6). Being retrofitted proactively across all
+  entrypoints by `@senior-data-engineer` (ADR-002 Add #6 retrofit ruling).
+
 ## Historical-data strategies (ADR-007 D7.4)
 1. **Initial load + incremental backfill** — `pipeline/extract/jdbc_batch_common.py`'s
    watermark-or-full-pull branch, made explicit via a `--full-backfill` flag on
