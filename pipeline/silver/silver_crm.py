@@ -212,4 +212,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # See pipeline/promote/promotion_gate.py's identical guard for why: Databricks'
+    # git-sourced spark_python_task runner treats ANY raised SystemExit as a task failure,
+    # even SystemExit(0).
+    _rc = main()
+    if _rc != 0:
+        raise SystemExit(_rc)

@@ -213,4 +213,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Only raise SystemExit on a real failure — Databricks' git-sourced spark_python_task
+    # runner treats ANY raised SystemExit (even code 0) as a task failure (live-confirmed
+    # 2026-07-16: promotion_gate genuinely promoted all 6 Salesforce partitions, 0
+    # quarantined, real Bronze Delta verified in S3, yet the job run showed FAILED with
+    # "SystemExit: 0" as the captured error). A bare `main()` call still exits 0 implicitly
+    # on success; non-zero still signals failure correctly for CLI/orchestrator callers.
+    _rc = main()
+    if _rc != 0:
+        raise SystemExit(_rc)
