@@ -80,6 +80,32 @@ via a **git-sourced Job** — now a real, proven path, not aspirational:
   cascades it to `depends_on` children (ADR-002 Add #6). Being retrofitted proactively across all
   entrypoints by `@senior-data-engineer` (ADR-002 Add #6 retrofit ruling).
 
+## CI/CD and Infrastructure-as-Code (ADR-008)
+The imperative `w.jobs.create` script that stood up the git-sourced Job above is NOT infra-as-code;
+ADR-008 graduates it to a declarative bundle + a gated CI/CD pipeline. Design-of-record:
+- **IaC = Databricks Asset Bundles (DAB).** A `databricks.yml` bundle at repo root is the sole
+  declarative source of truth for the Job (tasks, `depends_on`, `git_source`, cluster-id as a
+  bundle variable). `databricks bundle deploy` reconciles the workspace; the one-off SDK script is
+  retired (single owner = no drift). Bundle keeps `source: GIT`, so it uploads only the Job spec —
+  Databricks still pulls `pipeline/**` from the public git remote itself (the agent ships zero
+  code; the ADR-002 Add #6 BANNED code-shipping shape is not re-introduced).
+- **CI (extend `.github/workflows/ci.yml`):** the four governance gates PLUS a new unit-test job
+  (`python -m unittest discover -s tests`). $0, no secrets, on PR + push:main.
+- **CD (new `.github/workflows/cd.yml`):** `workflow_dispatch` ONLY (never `push`, never
+  `schedule` — a cron here would be an in-repo scheduler, which D-10 forbids and Airflow owns).
+  Runs against a GitHub Environment `databricks` (owner-approval-gated, holds `DATABRICKS_HOST` +
+  `DATABRICKS_TOKEN`). Steps: `bundle validate` → `bundle deploy` → (only on a `deploy-and-run`
+  input) `bundle run`.
+- **Cost gate (finops):** `deploy` is free control-plane (no cluster); `bundle run` is the only
+  metered path and is reachable only via an explicit manual `deploy-and-run` dispatch behind the
+  Environment approval. No commit auto-runs the cluster. Credit ceiling deferred to `@finops`.
+- **D-10 / Airflow:** the DAB Job carries NO `schedule`/`trigger` block — it is the control-plane
+  contract surface the external Airflow (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md`) will
+  drive as pipeline #6. CD is a deploy tool, not a scheduler.
+- **Owner-action (one, blocking CD only):** create the `databricks` GitHub Environment and add the
+  two secrets to it. No token ever lives in the repo (`secrets_scan.py` stays green); until this is
+  done CI is fully live and CD is inert-but-valid.
+
 ## Historical-data strategies (ADR-007 D7.4)
 1. **Initial load + incremental backfill** — `pipeline/extract/jdbc_batch_common.py`'s
    watermark-or-full-pull branch, made explicit via a `--full-backfill` flag on

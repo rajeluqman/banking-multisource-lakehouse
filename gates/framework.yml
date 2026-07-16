@@ -88,6 +88,14 @@ boundary:
     banned_regex: 'raise SystemExit\(main\('
     reason: "ADR-002 Add #6 — Databricks git-sourced spark_python_task treats SystemExit(0) as failure; use `_rc = main(...); if _rc != 0: raise SystemExit(_rc)` instead"
 
+  # No in-repo scheduler (D-10, ADR-008) — a `schedule:` cron in a GitHub Actions workflow would
+  # make CI/CD the pipeline scheduler, duplicating the external Airflow orchestrator this repo
+  # deliberately does NOT host. CD is workflow_dispatch-only; cadence is Airflow's job.
+  no_inrepo_scheduler:
+    scan_globs: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    banned_regex: '^\s*schedule:'
+    reason: "D-10 / ADR-008 — no in-repo scheduler; GitHub Actions must not cron-run the pipeline (Airflow owns cadence). Use workflow_dispatch."
+
   # Free-text ingestion allowlist, informational (not regex-enforced — ingestion mechanism
   # rarely has a clean import signature). Cite in governance/BOUNDARY_CONTRACT.md too.
   ingestion_allowlist:

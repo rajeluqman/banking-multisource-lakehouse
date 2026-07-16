@@ -1,0 +1,67 @@
+# Databricks Asset Bundle — the declarative, git-diffable source of truth for this repo's
+# Databricks Job(s). ADR-008 (CI/CD + Infrastructure-as-Code). Replaces the one-off imperative
+# `w.jobs.create(...)` SDK call that first stood up the git-sourced Job (2026-07-16) — a bundle
+# is version-controlled and reconciled by `databricks bundle deploy`, so there is exactly ONE
+# owner of the Job and no click-ops drift.
+#
+# KEY PROPERTY (ADR-002 Add #6): every task uses `source: GIT` + a bundle-level `git_source`, so
+# `bundle deploy` uploads ONLY the Job spec — Databricks pulls `pipeline/**` from the PUBLIC git
+# remote itself. The agent/bundle never ships repo code onto the cluster (the harness-BANNED
+# code-shipping shape is not re-introduced).
+#
+# NO `schedule:`/`trigger:` block anywhere here — cadence is owned by the future external
+# orchestrator (Airflow, D-10), never by an in-repo scheduler. Enforced by gates/boundary_contract.py.
+#
+# Auth: host + token come from the DATABRICKS_HOST / DATABRICKS_TOKEN environment (CD: a GitHub
+# Environment secret; local: `.env`). No literal host or token lives in this file.
+
+bundle:
+  name: banking-lakehouse
+
+variables:
+  cluster_id:
+    description: >-
+      The existing SINGLE_USER cluster the Job runs on (ADR-002 Add #5). A variable, not a
+      hardcoded resource, so re-creating the cluster is a one-line override, not a bundle edit
+      (D-14 portability — survives the disposable trial being deleted).
+    default: 0715-022729-6j0g8jhn
+  git_branch:
+    description: >-
+      Branch Databricks checks out for the git_source Job. Defaults to the branch that carries
+      the proven S3-write fixes + the SystemExit(0) entrypoint guards (ADR-002 Add #6); change to
+      `main` once that branch is merged.
+    default: feat/salesforce-crm-swap
+
+resources:
+  jobs:
+    banking_bronze_silver:
+      name: banking-lakehouse-berka-salesforce-bronze-silver
+      # Databricks pulls the code itself from the public remote — bundle ships no code.
+      git_source:
+        git_url: https://github.com/rajeluqman/banking-multisource-lakehouse
+        git_provider: gitHub
+        git_branch: ${var.git_branch}
+      tasks:
+        - task_key: promotion_gate_salesforce
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: pipeline/promote/promotion_gate.py
+            source: GIT
+        - task_key: silver_crm
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: promotion_gate_salesforce
+          spark_python_task:
+            python_file: pipeline/silver/silver_crm.py
+            source: GIT
+
+# This bundle codifies the PROVEN 2-stage Berka-via-Salesforce run only. Growing it to the full
+# 27-stage canonical run is a separate decision that must clear @finops (metered cluster cost)
+# and @scope-guardian (canonical-ingest scope) first — do not silently expand the task list here
+# (ADR-008 §routing).
+
+targets:
+  dev:
+    mode: development
+    default: true
+    # workspace.host resolves from the DATABRICKS_HOST env var (no literal host here — ADR-008).

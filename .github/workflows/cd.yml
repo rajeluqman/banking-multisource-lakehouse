@@ -1,0 +1,53 @@
+name: CD (Databricks Asset Bundle)
+
+# ADR-008 — deploy the Databricks Job from databricks.yml (DAB), and OPTIONALLY run it.
+#
+# workflow_dispatch ONLY — never `push`, never `schedule`. A cron here would be an in-repo
+# scheduler, which D-10 forbids (cadence is owned by the external Airflow orchestrator) and
+# gates/boundary_contract.py enforces. Cost discipline (@finops): `bundle deploy` is a free
+# control-plane reconcile; `bundle run` is the ONLY metered path and is gated behind an explicit
+# `deploy-and-run` choice + the `databricks` GitHub Environment's owner-approval.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "deploy (free) or deploy-and-run (metered — spins the cluster)"
+        type: choice
+        default: deploy
+        options:
+          - deploy
+          - deploy-and-run
+      job_key:
+        description: "Bundle resource key to run (only used for deploy-and-run)"
+        type: string
+        default: banking_bronze_silver
+      target:
+        description: "Bundle target"
+        type: string
+        default: dev
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    # The `databricks` Environment holds DATABRICKS_HOST + DATABRICKS_TOKEN and (owner-configured)
+    # a required-reviewer approval gate — so no metered run happens without an explicit human OK.
+    environment: databricks
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Databricks CLI
+        uses: databricks/setup-cli@main
+
+      - name: Validate bundle
+        run: databricks bundle validate -t ${{ inputs.target }}
+
+      - name: Deploy bundle (control-plane only, free)
+        run: databricks bundle deploy -t ${{ inputs.target }}
+
+      - name: Run job (metered — only on deploy-and-run)
+        if: ${{ inputs.action == 'deploy-and-run' }}
+        run: databricks bundle run ${{ inputs.job_key }} -t ${{ inputs.target }}

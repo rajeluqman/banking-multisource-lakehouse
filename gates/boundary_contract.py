@@ -69,8 +69,10 @@ def check(config: dict) -> list[str]:
                     continue
                 errors.append(f"{rel}:{lineno}: banned import '{module}' — {reason}")
 
-    guard = get(config, "boundary.entrypoint_guard", {}) or {}
-    if guard:
+    for gname in ("entrypoint_guard", "no_inrepo_scheduler"):
+        guard = get(config, f"boundary.{gname}", {}) or {}
+        if not guard:
+            continue
         banned_re = re.compile(guard.get("banned_regex", ""))
         reason = guard.get("reason", "")
         for glob in guard.get("scan_globs", []):
@@ -80,7 +82,7 @@ def check(config: dict) -> list[str]:
                 rel = path.relative_to(REPO)
                 for lineno, line in enumerate(path.read_text(errors="ignore").splitlines(), start=1):
                     if banned_re.search(line):
-                        errors.append(f"{rel}:{lineno}: banned entrypoint pattern — {reason}")
+                        errors.append(f"{rel}:{lineno}: {gname} violation — {reason}")
 
     if locked_adapter:
         for name in profile_files:

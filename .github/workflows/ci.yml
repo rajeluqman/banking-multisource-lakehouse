@@ -30,3 +30,16 @@ jobs:
       #   run: python gates/identity_contract.py
       # - name: dbt parse (if this project uses dbt)
       #   run: cd <dbt_project_dir> && dbt deps && dbt parse
+
+  # Unit tests (ADR-008) — the birth_number decode suite is pure-stdlib (no pyspark/cloud deps),
+  # so this stays $0 and secret-free like the gates. Runs alongside `gates`, not after — a test
+  # failure and a gate failure are independent signals, both blocking.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
