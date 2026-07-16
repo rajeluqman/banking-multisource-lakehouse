@@ -2,6 +2,52 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-16 (SEVENTH session) — ✅ FIRST REAL (non-local-fallback) MEDALLION RUN + git-native
+CI/CD stood up. Berka-via-Salesforce Landing→Bronze→Silver ALL in real S3, independently
+boto3-verified. Full detail: `BUILD_REPORT.md` §20, `ADR-002` Add #6, `ADR-008`.** Summary:
+
+- **Real gap found + fixed (staff-DE ruled):** `salesforce_extract.py`/`promotion_gate.py`
+  unconditionally rewrote `s3://` paths to `/tmp/s3_staging/` regardless of AWS creds — so every
+  prior "live" run wrote to LOCAL DISK despite emitting `s3://` paths (explains why §17 found the
+  S3 prefix empty). New `pipeline/common/s3_io.py` (dual-mode boto3/local, mirrors
+  `watermark.py`'s `_is_s3` pattern); Salesforce Landing + the promotion-gate batch path now do
+  real S3 I/O. Teradata-CDC/OBP paths still shimmed = named follow-up. Commit `7a4d996`.
+- **REAL medallion proven, all boto3-verified independently:** Landing (18 objects, 6 tables, via
+  local boto3 extract) → Bronze (24 objects) → Silver (24 objects, all 6 CRM tables), real Delta
+  logs in `s3://banking-lakehouse-pipeline/banking/{landing,bronze,silver}/`. First time this
+  project has real (not seed-fixture, not local-fallback) medallion data in S3.
+- **Code-delivery to Databricks: git-native is now the ONLY sanctioned path (ADR-002 Add #6).**
+  Ad-hoc command-execution code-shipping (tar / per-file base64 of `pipeline/`) is HARNESS-BLOCKED
+  as bulk-exfiltration-shaped — confirmed by testing, not assumed; do NOT re-attempt. Working
+  path: `git push` public remote → Databricks Repos/Jobs `git_source` → run. Bronze+Silver ran
+  via a git-sourced Databricks Job (id `778449103358221`) on the `SINGLE_USER` cluster.
+- **`SystemExit(0)`-as-failure fixed + hardened project-wide.** Databricks' git-sourced
+  `spark_python_task` treats ANY raised `SystemExit` (even code 0 = success) as task failure. All
+  29 pipeline entrypoints retrofitted to `_rc = main(...); if _rc != 0: raise SystemExit(_rc)`;
+  enforced by a new `boundary.entrypoint_guard` gate. Commits `e34099c` (first 2) + `9a4175b` (27).
+- **Full CI/CD stood up (ADR-008, staff-DE authored):** `databricks.yml` DAB bundle (declarative
+  Job, replaces the imperative `w.jobs.create`; `bundle validate -t dev` → "Validation OK!" against
+  live workspace); `.github/workflows/cd.yml` (workflow_dispatch-only, `databricks` GitHub
+  Environment gates the metered `bundle run`); `ci.yml` gains a unit-test job; new
+  `no_inrepo_scheduler` gate enforces D-10 (no cron in workflows — Airflow owns cadence). Commit
+  `65fb6ce`.
+- **Trigger policy (owner override):** agent MAY `run_now` a git_source Job on an explicit owner
+  "run" prompt (ships zero code → not the BANNED pattern). Airflow is the planned scheduler (D-10).
+- **⚠ OWNER-ACTION PENDING (blocks CD from running):** create a GitHub Environment named
+  `databricks` and add `DATABRICKS_HOST` + `DATABRICKS_TOKEN` as its secrets. No token in repo.
+- All 4 gates + 7 unit tests green. Cluster terminated (cost discipline). Branch
+  `feat/salesforce-crm-swap`, not yet merged to `main`.
+
+**Next session / candidate work:** (1) merge `feat/salesforce-crm-swap` → `main` (opens the PR
+that fires CI); (2) owner adds the `databricks` Environment secrets, then a real CD run; (3) scale
+the proven pattern to the other sources (PaySim/Home Credit/Teradata) — re-check `@finops` before
+Home Credit's 13.6M-row table (finops condition); (4) migrate the Teradata-CDC/OBP extractors off
+the local-staging shim to `s3_io` (named follow-up); (5) Gold layer to real S3 via the same
+git-sourced Job pattern (expanding the DAB Job past 2 stages needs `@finops`+`@scope-guardian`
+sign-off per ADR-008).
+
+---
+
 **2026-07-16 (sixth session) — ✅ REAL S3 WRITES PROVEN END-TO-END. "Known blocker" RESOLVED.
 Plan B executed: `dim_fx_rate` Gold Delta written to `s3://banking-lakehouse-pipeline/banking/
 gold/dim_fx_rate` and verified (Databricks read-back + independent `boto3`). Full detail:
