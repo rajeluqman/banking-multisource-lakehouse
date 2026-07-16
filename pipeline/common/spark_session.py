@@ -21,7 +21,18 @@ def get_spark(app_name: str) -> SparkSession:
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
     )
-    return builder.getOrCreate()
+    if use_unity_catalog():
+        # Databricks runtime bundles the Delta JVM jars already — nothing more to configure.
+        return builder.getOrCreate()
+    # Local/dev-loop Spark (D-14) has no Delta jar on the classpath by default; the delta-spark
+    # pip package only ships the Python side. Resolve the matching JVM jar via Maven coordinates
+    # (io.delta:delta-spark_2.12:3.2.1 matches pyspark==3.5.3 / delta-spark==3.2.1 pinned in
+    # requirements.txt). Same story for the Postgres/MS SQL JDBC drivers postgres_extract.py/
+    # mssql_extract.py need — a Databricks cluster has these preinstalled, vanilla pip pyspark
+    # does not.
+    from delta import configure_spark_with_delta_pip
+    jdbc_packages = ["org.postgresql:postgresql:42.7.4", "com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre11"]
+    return configure_spark_with_delta_pip(builder, extra_packages=jdbc_packages).getOrCreate()
 
 
 def use_unity_catalog() -> bool:

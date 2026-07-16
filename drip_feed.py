@@ -3,8 +3,13 @@
 
 Every interval: a few random rows per source get INSERT'd or UPDATE'd, always touching
 `updated_at`; soft-deletes flip `is_deleted` rather than physically removing a row (D-06 —
-hard deletes are a Fasa C CDC concern, R-25). For SAP HANA/Teradata, INSERT/UPDATE/DELETE
-naturally fire the CDC triggers (ADR-006 D6.3) automatically — no special-casing needed.
+hard deletes are a Fasa C CDC concern, R-25). For Teradata, INSERT/UPDATE/DELETE naturally
+fire the CDC triggers (ADR-006 D6.3) automatically — no special-casing needed. Salesforce
+(ADR-006 Add #2) has no trigger/CDC-log surface at all — its drip is a plain REST API field
+edit on a random sample of Contacts, which bumps `SystemModstamp` automatically (Salesforce
+system-managed field, not settable directly) so the next `salesforce_extract.py` Bulk API
+pull picks the touched rows up via its `SystemModstamp` watermark, same effect as the
+DB-trigger sources reaching their `_cdc_log`.
 
 Not run by this session (owner instruction — no live connections here). Meant to run
 continuously in whichever environment executes the pipeline, once all 4 sources are seeded.
@@ -38,14 +43,6 @@ def _mssql_engine():
     db = os.environ.get("MSSQL_DB", "banking_cards")
     return create_engine(
         f"mssql+pyodbc://{user}:{pwd}@{host}:{port}/{db}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" # secrets-scan:allow — built from env vars, not a literal secret
-    )
-
-
-def _sap_hana_connection():
-    from hdbcli import dbapi
-    return dbapi.connect(
-        address=os.environ["SAP_HANA_HOST"], port=int(os.environ.get("SAP_HANA_PORT", 443)),
-        user=os.environ["SAP_HANA_USER"], password=os.environ["SAP_HANA_PASSWORD"], encrypt=True,
     )
 
 
@@ -91,14 +88,34 @@ def _touch_random_rows_dbapi(connection, table: str, pk_column: str, n: int, sof
     return len(picked)
 
 
+def _touch_random_rows_salesforce(sf, sf_object: str, touch_field: str, n: int) -> int:
+    """Salesforce has no trigger/CDC-log surface (ADR-006 Add #2) and `SystemModstamp` is
+    system-managed (not directly settable), so "touching" a row here means a real REST
+    field UPDATE with the field's OWN current value re-written — a genuine no-op value
+    change, same shape as a DB `UPDATE ... SET updated_at = now()` touch, that still bumps
+    `SystemModstamp` so the next `salesforce_extract.py` Bulk API pull picks it up. No
+    soft-delete simulation for Salesforce — Contact/Account have no `is_deleted`-shaped
+    field seeded onto them (D-06's soft-delete convention doesn't extend to this source)."""
+    result = sf.query(f"SELECT Id, {touch_field} FROM {sf_object} LIMIT {n * 5}")
+    records = result["records"]
+    if not records:
+        return 0
+    import random
+    picked = random.sample(records, min(n, len(records)))
+    sf_type = getattr(sf, sf_object)
+    for rec in picked:
+        sf_type.update(rec["Id"], {touch_field: rec[touch_field]})
+    return len(picked)
+
+
 # One representative table per source is drip-fed — same INSERT/UPDATE/soft-delete shape
 # applies to every other seeded table, this is not special-cased beyond the demo table.
 DRIP_TARGETS = {
     "postgres": ("application", "SK_ID_CURR"),
     "mssql": ("paysim_transactions", "txn_id"),
-    "sap_hana": ("client", "client_id"),
     "teradata": ("bank_marketing", "customer_id"),
 }
+SALESFORCE_DRIP_TARGET = ("Contact", "berka_client_id__c")  # (sf_object, touch_field)
 
 
 def _tick(rows_per_tick: int, soft_delete_every: int) -> None:
@@ -113,9 +130,10 @@ def _tick(rows_per_tick: int, soft_delete_every: int) -> None:
     n = _touch_random_rows_sqlalchemy(_mssql_engine(), table, pk, rows_per_tick, soft_delete_every)
     print(f"  mssql.{table}: {n} rows touched")
 
-    table, pk = DRIP_TARGETS["sap_hana"]
-    n = _touch_random_rows_dbapi(_sap_hana_connection(), table, pk, rows_per_tick, soft_delete_every)
-    print(f"  sap_hana.{table}: {n} rows touched (CDC trigger fired per row, ADR-006)")
+    from pipeline.extract.salesforce_auth import get_salesforce_client
+    sf_object, touch_field = SALESFORCE_DRIP_TARGET
+    n = _touch_random_rows_salesforce(get_salesforce_client(), sf_object, touch_field, rows_per_tick)
+    print(f"  salesforce.{sf_object}: {n} rows touched (SystemModstamp bumped, ADR-006 Add #2)")
 
     table, pk = DRIP_TARGETS["teradata"]
     n = _touch_random_rows_dbapi(_teradata_connection(), table, pk, rows_per_tick, soft_delete_every)

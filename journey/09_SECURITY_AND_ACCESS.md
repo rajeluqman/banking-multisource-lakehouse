@@ -16,10 +16,10 @@ explicitly, not a speculative security *program*.
 | Secret | Used by | Stored in | Never |
 |---|---|---|---|
 | Postgres / MS SQL creds | watermark extractors | Databricks secret scope (canonical run) / `.env` (gitignored, dev loop) | in code or config committed to git |
-| SAP HANA Cloud connection (host/port/instance/creds) | `sap_hana_extract.py`, seed loader (ADR-006) | Databricks secret scope / `.env` (gitignored) | in code, chat, or committed config — owner supplies via `.env` only |
+| Salesforce OAuth (Connected App consumer key/secret + refresh token) | `salesforce_extract.py`, seed loader (ADR-006 Add #2) | Databricks secret scope / `.env` (gitignored) | in code, chat, or committed config — owner supplies via `.env` only |
 | Teradata connection (host/creds) | `teradata_extract.py`, seed loader (ADR-006) | Databricks secret scope / `.env` (gitignored) | same as above |
 | OBP OAuth client id/secret + token | OBP API client | Databricks secret scope | in the landing path or logs |
-| S3 access key (transform) | Databricks ↔ S3 | Unity Catalog storage credential / instance profile | as a long-lived key hardcoded in code |
+| S3 access key (transform) | Databricks ↔ S3 | Databricks secret scope `banking-lakehouse-s3`, referenced via `spark_env_vars` templating on a `SINGLE_USER` cluster (ADR-002 Add #2/#5 — UC storage credential is read-only-only on this Azure account, cannot vend a read-write S3 write path) | as a long-lived key hardcoded in code, or in a command payload / command history |
 | S3 read-only key (serving) | Snowflake external tables | Snowflake storage integration | scoped beyond `banking/gold/`, never write |
 | `BANK_PAT` (git push) | git credential helper | Codespaces secret ($env only) | on disk / in the remote URL |
 
@@ -31,7 +31,7 @@ shape `dapi[0-9a-f]{32}`, OBP DirectLogin header shape, OBP OAuth secret assignm
 ## 2. Data classification
 | Data | Where | Classification | Handling |
 |---|---|---|---|
-| `birth_number` (Berka) | landing/bronze `sap_crm` | **sensitive** (national-ID-shaped, encodes DOB+gender) | decode → `birth_date`+`gender` at Silver (R-12); raw value dropped after decode, never persisted |
+| `birth_number` (Berka) | landing/bronze `salesforce_crm` (Contact `birth_number__c`) | **sensitive** (national-ID-shaped, encodes DOB+gender) | decode → `birth_date`+`gender` at Silver (R-12); raw value dropped after decode, never persisted |
 | account number / `account_id` | postgres, mssql, OBP, Berka | **sensitive** (financial account) | mask to last-4 at Silver (D-07) |
 | card number | mssql `cards` | **sensitive** (PCI-shaped) | mask to last-4 at Silver; never in Gold raw |
 | balances, `amount`, txn value | all sources | **confidential** (financial) | aggregate-only in most Gold marts; row-level access restricted |

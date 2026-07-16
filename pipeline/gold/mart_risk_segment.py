@@ -57,7 +57,14 @@ def build(spark: SparkSession) -> None:
     mart.write.format("delta").mode("overwrite").save(layer_path("gold", "mart_risk_segment"))
 
 
-if __name__ == "__main__":
+def main() -> int:
     from pipeline.common.spark_session import get_spark
 
     build(get_spark("mart_risk_segment"))
+    return 0
+
+
+if __name__ == "__main__":
+    _rc = main()
+    if _rc != 0:
+        raise SystemExit(_rc)

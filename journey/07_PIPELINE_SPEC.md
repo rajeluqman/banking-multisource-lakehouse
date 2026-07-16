@@ -15,19 +15,23 @@ with Unity Catalog attached, evidence harvested into `journey/08_SERVING_AND_EVI
 
 **Source-side compute (ADR-006):** Postgres and MS SQL Server run as Docker containers wherever
 the pipeline is executed (owner's dedicated Codespace for actual runs, not the planning session).
-SAP HANA Cloud and Teradata are the owner's own provisioned cloud instances (BTP Free Tier /
-Vantage Express) — never spun up or connected to from the docs-authoring session; connection
+Salesforce (a Developer/trial org) and Teradata (Vantage Express / Teradata Cloud free tier)
+are the owner's own provisioned instances — never spun up or connected to from the docs-authoring session; connection
 details arrive via `.env` only when the owner is ready to run the extractor against them.
 
-## SAP HANA Cloud / Teradata prerequisites (owner action, before Fasa B can run live)
-1. Provision SAP HANA Cloud (BTP Free Tier) — enable internet-facing endpoint (R-39); note host,
-   port, instance id.
-2. Provision Teradata (Vantage Express or Teradata Cloud free tier) — same network-exposure check.
-3. `pip install hdbcli` (SAP HANA Python driver) + the Teradata Python driver in the environment
-   that will run seed/sap_hana/load_berka.py / seed/teradata/load_bank_marketing.py.
-4. Fill the SAP HANA / Teradata block in `.env` (never commit real values — see
+## Salesforce / Teradata prerequisites (owner action, before Fasa B can run live)
+1. Provision a Salesforce Developer/trial org — create an External Client App with **Client
+   Credentials Flow** enabled (Setup → Flow Enablement; NOT Username-Password/ROPC — this org's
+   External Client App model doesn't expose that flow at all, live-confirmed BUILD_REPORT.md §11)
+   and a **Run As** user set; note the Consumer Key/Secret + the org's My Domain host (`SALESFORCE_
+   LOGIN_URL`). Salesforce is a public SaaS endpoint — no network-exposure step; R-39 does not apply
+   to source #4 (ADR-006 Add #2).
+2. Provision Teradata (Vantage Express or Teradata Cloud free tier) — network-exposure check (R-39).
+3. `pip install simple-salesforce` (or a Bulk API 2.0 client) + the Teradata Python driver in the
+   environment that will run seed/salesforce/load_berka.py / seed/teradata/load_bank_marketing.py.
+4. Fill the Salesforce (Connected App) / Teradata block in `.env` (never commit real values — see
    `journey/09_SECURITY_AND_ACCESS.md` §1).
-Until these are done, all SAP HANA/Teradata code in this repo is written but UNVERIFIED against a
+Until these are done, all Salesforce/Teradata code in this repo is written but UNVERIFIED against a
 live instance — tagged as such in `BUILD_REPORT.md`, not silently claimed as tested.
 
 ## Orchestration (ADR-007 — decoupled, config-driven)
@@ -41,7 +45,8 @@ contract (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md` in the planning wo
 that adoption is out of THIS repo's scope — `orchestrate.py` is the local dev-loop
 sequencer, not a competing scheduler.
 - Cadence per source (config-driven, not uniform): `batch` (Postgres/MSSQL — scheduled,
-  e.g. nightly) vs `cdc_poll` (SAP HANA/Teradata — short interval, e.g. every 5 min).
+  e.g. nightly) vs `cdc_poll` (Teradata — short interval, e.g. every 5 min) and `bulk_api_poll` (Salesforce —
+  Bulk API 2.0 `SystemModstamp` incremental, short interval; ADR-006 Add #2).
   `drip_feed.py` runs as a standalone interval loop simulating live source traffic between
   orchestrated runs.
 - Retry policy: extractors retry-with-backoff on transient failure (DB connection drop, OBP
@@ -51,6 +56,55 @@ sequencer, not a competing scheduler.
   the same control-plane store `pipeline/common/watermark.py` uses — `mart_pipeline_health`
   (BQ-10) reads this alongside its row-count reconciliation, so BQ-10 reflects orchestration
   health, not just data counts.
+
+## Databricks execution path (PROVEN 2026-07-16 — ADR-002 Addendum #6)
+`orchestrate.py` above is the local dev-loop sequencer. On Databricks the SAME entrypoints run
+via a **git-sourced Job** — now a real, proven path, not aspirational:
+- **Deployment (git-native, superseding Add #5's ad-hoc command-execution code-shipping):** push
+  to the public GitHub remote → Databricks clones it into a Workspace Repo (`w.repos.create(...,
+  provider="gitHub")`) → a Job (`w.jobs.create`) with `GitSource(git_provider=GIT_HUB,
+  git_branch=...)` runs one `spark_python_task` (`source=Source.GIT`,
+  `python_file="pipeline/.../<entrypoint>.py"`) per stage, `depends_on`-chained. Runs on the
+  `SINGLE_USER` cluster (ADR-002 Add #5, unchanged).
+- **Run-triggering (owner override 2026-07-16):** the agent MAY call `run_now` on the git-sourced
+  Job when the owner explicitly prompts "run" (the prompt is the authorization); it does not
+  auto-trigger unprompted. `run_now` ships zero code (Databricks pulls from git), so it is NOT the
+  BANNED pattern. A future external orchestrator (Airflow, D-10) owns scheduled triggering. Ad-hoc
+  command-execution code-shipping (tar / per-file base64 of `pipeline/`) remains BANNED —
+  harness-blocked, not just discouraged (ADR-002 Add #6).
+- **Proven run:** `pipeline/promote/promotion_gate.py` → Bronze then `pipeline/silver/silver_crm.py`
+  → Silver, `RunResultState.SUCCESS`, both layers independently boto3-verified in S3.
+- **Entrypoint contract (durable Databricks platform fact):** every `__main__` guard must
+  `raise SystemExit(rc)` ONLY when `rc != 0`. Databricks' git-sourced `spark_python_task` runner
+  treats ANY raised `SystemExit` — including `SystemExit(0)` (success) — as a task failure and
+  cascades it to `depends_on` children (ADR-002 Add #6). Being retrofitted proactively across all
+  entrypoints by `@senior-data-engineer` (ADR-002 Add #6 retrofit ruling).
+
+## CI/CD and Infrastructure-as-Code (ADR-008)
+The imperative `w.jobs.create` script that stood up the git-sourced Job above is NOT infra-as-code;
+ADR-008 graduates it to a declarative bundle + a gated CI/CD pipeline. Design-of-record:
+- **IaC = Databricks Asset Bundles (DAB).** A `databricks.yml` bundle at repo root is the sole
+  declarative source of truth for the Job (tasks, `depends_on`, `git_source`, cluster-id as a
+  bundle variable). `databricks bundle deploy` reconciles the workspace; the one-off SDK script is
+  retired (single owner = no drift). Bundle keeps `source: GIT`, so it uploads only the Job spec —
+  Databricks still pulls `pipeline/**` from the public git remote itself (the agent ships zero
+  code; the ADR-002 Add #6 BANNED code-shipping shape is not re-introduced).
+- **CI (extend `.github/workflows/ci.yml`):** the four governance gates PLUS a new unit-test job
+  (`python -m unittest discover -s tests`). $0, no secrets, on PR + push:main.
+- **CD (new `.github/workflows/cd.yml`):** `workflow_dispatch` ONLY (never `push`, never
+  `schedule` — a cron here would be an in-repo scheduler, which D-10 forbids and Airflow owns).
+  Runs against a GitHub Environment `databricks` (owner-approval-gated, holds `DATABRICKS_HOST` +
+  `DATABRICKS_TOKEN`). Steps: `bundle validate` → `bundle deploy` → (only on a `deploy-and-run`
+  input) `bundle run`.
+- **Cost gate (finops):** `deploy` is free control-plane (no cluster); `bundle run` is the only
+  metered path and is reachable only via an explicit manual `deploy-and-run` dispatch behind the
+  Environment approval. No commit auto-runs the cluster. Credit ceiling deferred to `@finops`.
+- **D-10 / Airflow:** the DAB Job carries NO `schedule`/`trigger` block — it is the control-plane
+  contract surface the external Airflow (`../control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md`) will
+  drive as pipeline #6. CD is a deploy tool, not a scheduler.
+- **Owner-action (one, blocking CD only):** create the `databricks` GitHub Environment and add the
+  two secrets to it. No token ever lives in the repo (`secrets_scan.py` stays green); until this is
+  done CI is fully live and CD is inert-but-valid.
 
 ## Historical-data strategies (ADR-007 D7.4)
 1. **Initial load + incremental backfill** — `pipeline/extract/jdbc_batch_common.py`'s
@@ -71,8 +125,10 @@ sequencer, not a competing scheduler.
 - Identity key: `customer_id` via `dim_customer_xwalk` for cross-source dedup at Gold; per-source
   native PK (`SK_ID_CURR`, generated PaySim `txn_id`, Berka `client_id`/`account_id`, OBP
   `account_id`) for Bronze/Silver skip-existing and MERGE keys (`journey/04_DATA_MODEL.md`
-  identity section). SAP HANA/Teradata CDC extraction keys off `_cdc_log.seq` (a monotonic offset,
-  stored in the lake like the batch watermark) rather than a timestamp watermark (ADR-006 D6.3).
+  identity section). Teradata CDC extraction keys off `_cdc_log.seq` (a monotonic offset, stored in
+  the lake like the batch watermark); Salesforce (source #4) keys off the `SystemModstamp`
+  high-watermark via Bulk API 2.0 (ADR-006 Add #2) — the same watermarked-incremental shape as the
+  Postgres/MSSQL extractors.
 - Partial-failure rerun: safe to just re-run at every layer. Landing extraction re-runs the same
   watermark window (idempotent — a re-pulled row is deduped by PK+`updated_at` at the Silver
   MERGE, not at Landing). Bronze promotion re-checks the same manifest; an already-promoted

@@ -79,18 +79,35 @@ boundary:
   profile_files: []
   locked_adapter: ""
 
+  # Entrypoint contract (ADR-002 Addendum #6) — Databricks' git-sourced spark_python_task runner
+  # treats ANY raised SystemExit, including SystemExit(0), as a TASK FAILURE (cascading to
+  # depends_on children). So no pipeline entrypoint may do a bare `raise SystemExit(main(...))` —
+  # it must `_rc = main(...); if _rc != 0: raise SystemExit(_rc)`. Enforced, not left to vigilance.
+  entrypoint_guard:
+    scan_globs: ["pipeline/**/*.py"]
+    banned_regex: 'raise SystemExit\(main\('
+    reason: "ADR-002 Add #6 — Databricks git-sourced spark_python_task treats SystemExit(0) as failure; use `_rc = main(...); if _rc != 0: raise SystemExit(_rc)` instead"
+
+  # No in-repo scheduler (D-10, ADR-008) — a `schedule:` cron in a GitHub Actions workflow would
+  # make CI/CD the pipeline scheduler, duplicating the external Airflow orchestrator this repo
+  # deliberately does NOT host. CD is workflow_dispatch-only; cadence is Airflow's job.
+  no_inrepo_scheduler:
+    scan_globs: [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+    banned_regex: '^\s*schedule:'
+    reason: "D-10 / ADR-008 — no in-repo scheduler; GitHub Actions must not cron-run the pipeline (Airflow owns cadence). Use workflow_dispatch."
+
   # Free-text ingestion allowlist, informational (not regex-enforced — ingestion mechanism
   # rarely has a clean import signature). Cite in governance/BOUNDARY_CONTRACT.md too.
   ingestion_allowlist:
     - "psycopg2 / sqlalchemy watermark extractor (PostgreSQL 'Sales / Loan Dept')"
     - "pyodbc / sqlalchemy watermark extractor (MS SQL Server 'Credit Card + Fraud')"
-    - "hdbcli CDC-poll extractor (SAP HANA Cloud 'Internal CRM', ADR-006 — trigger/change-table pattern, not SAP SLT/SDI)"
+    - "Salesforce Bulk API 2.0 client (Salesforce 'Internal CRM', ADR-006 Add #2 — SystemModstamp watermark incremental; not Pub/Sub CDC, not Airbyte, not federated direct-query)"
     - "Teradata CDC-poll extractor (ADR-006 — same trigger/change-table pattern, not QueryGrid)"
     - "Open Bank Project sandbox REST API client (OAuth/DirectLogin, paginated)"
     - "BNM OpenAPI (optional live FX enrich, never a build dependency — D-12)"
 
 identity:
-  grain_description: "bank-wide customer_id (dim_customer_xwalk, D-04) is the cross-source MDM identity; every Gold-layer customer-scoped row resolves to exactly one customer_id. Per-source native keys feed the crosswalk: SK_ID_CURR (Postgres/home-credit), nameOrig/nameDest (MSSQL/paysim), client_id+account_id (SAP-sim/Berka), OBP account_id (Open Bank Project)."
+  grain_description: "bank-wide customer_id (dim_customer_xwalk, D-04) is the cross-source MDM identity; every Gold-layer customer-scoped row resolves to exactly one customer_id. Per-source native keys feed the crosswalk: SK_ID_CURR (Postgres/home-credit), nameOrig/nameDest (MSSQL/paysim), client_id+account_id (Salesforce/Berka), OBP account_id (Open Bank Project)."
   key_columns:
     - "customer_id"
     - "SK_ID_CURR"

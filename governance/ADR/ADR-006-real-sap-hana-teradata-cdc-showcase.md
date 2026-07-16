@@ -151,3 +151,89 @@ R-01…R-35; tracked here since this ADR is this repo's own divergence from that
     doesn't assume Teradata is CDC-only.
   - Full design + the cutover/aggregation rule: `journey/07_PIPELINE_SPEC.md` "Cold-tier
     query path (Teradata dual-role)"; SQL view: pipeline/gold/cold_tier/teradata_cold_view.sql.
+- **2026-07-14 (Addendum #2) — Source #4 changes: SAP HANA Cloud → Salesforce (CRM role
+  unchanged). Owner override, ratified; architect sign-off.**
+  Source #4's *hosting/delivery system* moves from SAP HANA Cloud (BTP Free Tier) to a
+  **Salesforce** Developer/trial org. The role is unchanged — source #4 is still "the Internal
+  CRM." Only the delivery vehicle and the extraction mechanism change; **Teradata (source #5) is
+  entirely unchanged** by this addendum.
+  - **What is superseded, precisely.** D6.3's generalized *trigger + `_cdc_log` change-table*
+    pattern **does NOT apply to Salesforce** and is superseded **for source #4 only**. Salesforce
+    is an OLTP SaaS platform: there is no DDL-trigger surface, no `AFTER INSERT/UPDATE/DELETE`
+    hook, and no shadow change-table you can create — the D6.3 mechanism is physically
+    unavailable there. Replaced, for source #4 only, by **Salesforce Bulk API 2.0 query jobs +
+    a `SystemModstamp` high-watermark (pull/incremental)** landing into the same medallion
+    (Landing → Bronze → Silver → Gold, ADR-003) as every other source. This is the same *class*
+    of skill the Postgres/MSSQL watermark extractors already demonstrate (watermarked incremental
+    pull), applied to a REST/Bulk SaaS surface — one level of authenticity up from a JDBC
+    watermark, not down from CDC.
+  - **Why the CDC-showcase learning goal is preserved, not lost.** ADR-006's whole point (D6.3,
+    Context §3) was to demonstrate real CDC-connector engineering — op-code handling, ordering,
+    offset tracking, idempotent landing, redelivery dedup. **Teradata (source #5) keeps the
+    hand-built SQL-trigger + `_cdc_log` CDC pattern (D6.3) and its cold-tier dual-role
+    (Addendum #1) unchanged**, so the CDC-showcase capability still ships and is still
+    interview-defensible. Losing it on source #4 does not lose it for the project. Source #4
+    instead now demonstrates a *different, also-in-demand* skill: Salesforce Bulk API 2.0
+    watermarked ingestion — a non-repeated skill in the portfolio, not a re-demonstration of
+    the JDBC-watermark or trigger-CDC patterns already shown.
+  - **Berka stays the data + golden-record keystone (no change to ADR-005 L26).** Salesforce is
+    the *delivery vehicle*; **Berka (Czech Financial Dataset) is the data seeded INTO Salesforce**
+    and remains the customer master. ADR-005 L26's survivorship order — `CRM (Berka) > core (OBP)
+    > loans (Home Credit) > cards (PaySim)` — is **unchanged**: the literal "CRM (Berka)" there
+    now reads as "the Berka data, delivered via Salesforce," not as a contradiction. No ADR-005
+    amendment is required because no survivorship rule, grain, or identity path changes — only the
+    transport under the CRM role. `dim_customer_xwalk.berka_client_id` (STTM L18) stays the
+    identity link; it is now sourced from a Salesforce Contact external-id custom field
+    (`berka_client_id__c`) instead of a HANA `client.client_id` column. Because Berka carries a
+    **real customer master**, seed-time MDM linkage for source #4 is **deterministic** (client_id
+    ↔ Contact), NOT the synthetic sampled assignment Teradata needs (R-38) — source #4 is
+    *simpler* to link than source #5, not harder.
+  - **Direct-query anti-pattern ruling (verified this session, CONFIRMED-WITH-CORRECTIONS).**
+    Federating a Gold-layer query directly against the Salesforce org (e.g. Snowflake external
+    function / live SOQL at report time, or Power BI direct-query to Salesforce) is **rejected as
+    an anti-pattern**. Salesforce is a row-level OLTP SaaS CRM: a live analytical query against it
+    (a) bypasses D-07 Silver masking (`birth_number`, addresses, account numbers would leave the
+    CRM unmasked), (b) bypasses D-04/ADR-005 MDM resolution (no `customer_id` without going
+    through the crosswalk), (c) couples Gold freshness/uptime to a trial-org's API governor
+    limits, and (d) is non-reproducible (the org's live state drifts). The correct pattern is the
+    one adopted: **ingest via Bulk API 2.0 into the medallion, mask+link at Silver, serve from
+    Gold.** (This is the *inverse* of Teradata's Addendum-#1 cold-tier direct-query, which is only
+    safe there because that path is **aggregate-only, PII-stripped, keyless** — a Salesforce
+    row-level direct-query would satisfy none of those preconditions, so the two are not in
+    tension.)
+  - **Case object resolves BQ-03's documented CRM-ticket gap (journey/03 L8) — enrichment, not a
+    new BQ.** Salesforce's standard **Case** object is a real ticketing surface, which the 4/5
+    prior systems lacked (journey/03 L8, journey/06 "known accepted quality gaps"). BQ-03 (fraud
+    follow-up SLA) may now source a **real** CRM-ticket timestamp from a Case instead of the
+    synthetic `disp`/`client`-cadence proxy. This is **enrichment of the EXISTING BQ-03**, not an
+    11th BQ — scope stays at the locked 10 (journey/02), same discipline as D6.4.
+  - **BACKLOG-parity discipline (history stays visible).** Per the same rule as Addendum #1 and
+    the Consequences list, the SAP HANA Cloud rows in journey/01/04/05/06/07/09 and the
+    `governance/BACKLOG.md` "Superseded rejections" ledger are **amended, not deleted** — the SAP
+    HANA→Salesforce move is recorded with today's date and reason; the original SAP-BTP-rejected
+    and HANA-override rows remain for the audit trail. A new BACKLOG "Superseded rejections" row
+    records this second override.
+  - **What this addendum does NOT decide (routed, not silently assumed):** (a) the Bulk API 2.0
+    job DDL/SOQL and the extractor code — `@senior-data-engineer`, Fasa B, journey/07_PIPELINE_SPEC.md; (b) any
+    NEW capability that Salesforce *tempts* but that adds scope — **address-change velocity**
+    (needs address history; a new append-only fact_address_change event fact, NOT a Type 2 SCD
+    on `dim_customer` — see architect model ruling below/this session) and **complaint-pattern
+    detection** (a new fact_complaint grain = a new mart/BQ) are **flagged to `@scope-guardian`
+    via ADR-000, NOT added here**. Disciplined-payer cross-sell plausibly fits existing BQ-05+06
+    (note, likely enrichment). Only BQ-03+Case is ruled in-scope by this addendum.
+  - **Does NOT change D6.1's source count** — still 5 sources; source #4's row is rewritten
+    (Salesforce, Bulk API 2.0 + `SystemModstamp`), source #5 (Teradata) is untouched.
+  - **Internal source-identifier key (build decision, recorded so the build is unambiguous):**
+    the pipeline code currently uses the string key `sap_hana` as source #4's identifier
+    (dict keys, Bronze/Silver path segments, watermark keys) across ~12 files —
+    `pipeline/silver/silver_crm.py`, `pipeline/promote/promotion_gate.py`,
+    `pipeline/gold/mart_pipeline_health.py`, `pipeline/gold/dim_customer.py`,
+    `pipeline/orchestrate_config.yml`, `drip_feed.py`, `pipeline/extract/{cdc_common,cdc_initial_snapshot,teradata_extract}.py`
+    (comments), `seed/common/cdc_ddl.py` (comment), plus the two orphaned files being replaced
+    (pipeline/extract/sap_hana_extract.py, seed/sap_hana/load_berka.py — both DELETED as part of
+    this build, doc_reference_contract.py C2 would otherwise flag these as live-path drift).
+    **Decision: rename
+    the source key `sap_hana` → `salesforce` consistently at build time** (@senior-data-engineer,
+    Fasa B). Rationale: the key names the *source system*, which is now Salesforce; leaving it
+    `sap_hana` would be a lie waiting to mislead. The rename is mechanical but must be done in one
+    pass so Bronze paths, watermark keys, and the health-mart source→silver map stay consistent.

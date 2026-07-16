@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Teradata ("Marketing / Campaign") -> Landing, CDC-poll (ADR-006 D6.3). Thin driver —
-poll logic lives in cdc_common.py, shared with sap_hana_extract.py.
+poll logic lives in cdc_common.py (Teradata-only since ADR-006 Add #2 moved Salesforce off
+the CDC-poll pattern entirely).
 
 Run against the owner's provisioned Teradata instance, NOT executed in this planning
 session (no live connection here — see journey/07_PIPELINE_SPEC.md prerequisites).
@@ -33,4 +34,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _rc = main()
+    if _rc != 0:
+        raise SystemExit(_rc)

@@ -1,0 +1,5 @@
+currency_code,rate_to_myr,rate_as_of,note
+MYR,1.0,2026-07-05,Reporting currency baseline (D-12) - identity rate
+CZK,0.205,2026-07-05,"Static illustrative CZK->MYR rate for Berka amounts - not a live BNM feed (D-12 says BNM OpenAPI is optional live enrich, never a build dependency)"
+EUR,5.00,2026-07-05,"Static illustrative EUR->MYR rate for Teradata bank_marketing (Portuguese-bank-study source, assumed EUR per journey/05_STTM.md)"
+unitless,,2026-07-05,"Non-convertible sentinel - Home Credit AMT_INCOME_TOTAL (anonymized competition data, no real currency known); tagged per D-12 so R-14's completeness gate can pass honestly, deliberately NOT converted (NULL rate -> NULL amount_myr, never a silently wrong number)"

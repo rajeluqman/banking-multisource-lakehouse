@@ -26,9 +26,17 @@ import csv
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from seed.common.seeding_utils import seeded_random
 
+# Golden-record survivorship order (ADR-005 Add #2). `obp: 2` is a RESERVED/WITHDRAWN tier — OBP
+# is deliberately Silver-terminal and is NEVER seeded into the xwalk (no obp rows are appended
+# below; line ~139 filters it out of the by_source tally). The rank is left at 2 rather than
+# renumbering home_credit→2/paysim→3 so the existing seeded ranks (1/3/4) stay reproducible; only
+# relative order matters (dim_customer.py Window.orderBy). Effective seeded tiers: berka=1,
+# home_credit=3, paysim=4.
 SOURCE_PRIORITY = {"berka": 1, "obp": 2, "home_credit": 3, "paysim": 4}
 
 # Fraction of a source's customer-shaped identifiers that overlap onto an EXISTING
@@ -43,15 +51,18 @@ def _read_column(csv_path: Path, column: str) -> list[str]:
             f"{csv_path} not found — run scripts/fetch_datasets.py first "
             f"(this repo does not download datasets automatically)."
         )
+    # Berka's ".asc" files are semicolon-delimited (same format seed/salesforce/load_berka.py
+    # reads with sep=";"); Home Credit/PaySim ".csv" files are comma-delimited.
+    delimiter = ";" if csv_path.suffix == ".asc" else ","
     with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, delimiter=delimiter)
         if column not in (reader.fieldnames or []):
             raise ValueError(f"{csv_path}: expected column '{column}' not found — "
                               f"the docs are a MAP, this file is the TERRITORY; STOP and confirm the real schema.")
         return [row[column] for row in reader if row[column]]
 
 
-def build(data_dir: Path) -> list[dict]:
+def build(data_dir: Path, paysim_sample: int | None = None) -> list[dict]:
     rng = seeded_random("build_xwalk")
     rows: list[dict] = []
     customer_pool: list[str] = []  # bank-wide customer_ids minted so far, for overlap sampling
@@ -78,10 +89,27 @@ def build(data_dir: Path) -> list[dict]:
 
     # 3. PaySim customer-shaped identifiers (C-prefixed only — R-09 excludes M-prefixed merchants):
     #    some fraction overlap onto an existing customer, rest mint a new PaySim-exclusive one.
-    paysim_raw = (
-        _read_column(data_dir / "paysim" / "paysim.csv", "nameOrig")
-        + _read_column(data_dir / "paysim" / "paysim.csv", "nameDest")
-    )
+    #    At dev-loop scale, sampled from the exact same ROWS `seed/mssql/load_paysim.py`
+    #    actually loads into MSSQL (same `seeded_random("paysim")` namespace + identical
+    #    pandas `.sample()` call) — NOT an independent re-sample. Live-caught: this file used
+    #    to sample unique customer IDs under a DIFFERENT RNG namespace
+    #    (`"build_xwalk.paysim_sample"`), so the xwalk's PaySim population and MSSQL's actual
+    #    seeded rows were two unrelated draws from the same 6.36M-row pool — `fact_txn.py`'s
+    #    PaySim leg resolved only ~62/20000 rows to a `customer_id` (almost exactly the ~63
+    #    expected by chance for two independent 20k samples), silently breaking every mart
+    #    that resolves a PaySim transaction to a bank-wide customer (R-38/D-03.4 — a rebuild
+    #    from scratch must be reproducible/consistent, not two independent samples).
+    paysim_csv_path = data_dir / "paysim" / "paysim.csv"
+    if not paysim_csv_path.exists():
+        raise FileNotFoundError(
+            f"{paysim_csv_path} not found — run scripts/fetch_datasets.py first "
+            f"(this repo does not download datasets automatically)."
+        )
+    paysim_df = pd.read_csv(paysim_csv_path)
+    if paysim_sample and len(paysim_df) > paysim_sample:
+        paysim_row_rng = seeded_random("paysim")  # SAME namespace as seed/mssql/load_paysim.py
+        paysim_df = paysim_df.sample(n=paysim_sample, random_state=paysim_row_rng.randint(0, 2**31)).reset_index(drop=True)
+    paysim_raw = paysim_df["nameOrig"].astype(str).tolist() + paysim_df["nameDest"].astype(str).tolist()
     paysim_customer_ids = sorted({n for n in paysim_raw if n.startswith("C")})
     for name_id in paysim_customer_ids:
         if customer_pool and rng.random() < PAYSIM_OVERLAP_FRACTION:
@@ -99,19 +127,28 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", type=Path, default=Path("data/raw"))
     ap.add_argument("--out", type=Path, default=Path("seed/artifacts/dim_customer_xwalk.csv"))
+    ap.add_argument("--paysim-sample", type=int, default=None,
+                     help="row-count sample matching seed/mssql/load_paysim.py's --sample "
+                          "(same value, same RNG namespace) for the dev loop (D-14); omit "
+                          "for the full population")
     args = ap.parse_args()
 
-    rows = build(args.data_dir)
+    rows = build(args.data_dir, paysim_sample=args.paysim_sample)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["customer_id", "source_system", "native_key", "source_priority_rank"])
         writer.writeheader()
         writer.writerows(rows)
 
-    unique_customers = {r["customer_id"] for r in rows}
-    by_source = {s: sum(1 for r in rows if r["source_system"] == s) for s in SOURCE_PRIORITY if s != "obp"}
-    multi_source = sum(1 for c in unique_customers
-                        if len({r["source_system"] for r in rows if r["customer_id"] == c}) > 1)
+    # single pass, not the O(unique_customers * rows) rescan this used to do — that's fine at
+    # fixture-test scale (41 rows, R-23) but pathological at real Kaggle-data scale (300K+ rows).
+    by_source = {s: 0 for s in SOURCE_PRIORITY if s != "obp"}
+    sources_by_customer: dict[str, set[str]] = {}
+    for r in rows:
+        by_source[r["source_system"]] += 1
+        sources_by_customer.setdefault(r["customer_id"], set()).add(r["source_system"])
+    unique_customers = sources_by_customer.keys()
+    multi_source = sum(1 for sources in sources_by_customer.values() if len(sources) > 1)
     print(f"dim_customer_xwalk: {len(rows)} rows, {len(unique_customers)} unique bank-wide customers")
     for source, count in by_source.items():
         print(f"  rows from {source}: {count}")

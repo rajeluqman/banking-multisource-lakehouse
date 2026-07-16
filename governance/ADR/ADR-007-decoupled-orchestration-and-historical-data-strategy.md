@@ -74,7 +74,8 @@ scripts read from it, nobody hardcodes the DAG shape in Python) declares:
 | **3. Hot/cold hybrid** | `ADR-006` Addendum #1 — Teradata's dual-role cold-tier (native aggregated view + Power BI composite model), NOT a generic S3 lifecycle policy (rejected as less concrete — Teradata is already in this architecture and is historically an EDW technology, so using it AS the cold tier is more honest and more demoable than inventing a lifecycle-policy stand-in). |
 
 ### D7.5 — Named gap surfaced by this discussion: CDC path never captures the seed-time bulk load (R-40)
-Found while reasoning through Strategy 3's cutover: `seed/sap_hana/load_berka.py` and
+Found while reasoning through Strategy 3's cutover: seed/sap_hana/load_berka.py (since
+DELETED, ADR-006 Add #2 — Berka's Salesforce successor is seed/salesforce/load_berka.py) and
 `seed/teradata/load_bank_marketing.py` both `INSERT` the bulk seed data BEFORE calling
 `setup_cdc()` — so the initial rows never fire the `AFTER INSERT` trigger and are **never
 represented in `_cdc_log`**. `pipeline/extract/cdc_common.py`'s `poll_cdc_log` only reads
