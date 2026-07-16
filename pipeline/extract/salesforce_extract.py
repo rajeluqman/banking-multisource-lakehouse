@@ -35,10 +35,10 @@ import datetime as dt
 import hashlib
 import io
 import json
-from pathlib import Path
 
 import pandas as pd
 
+from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
 from pipeline.common.watermark import read_watermark, write_watermark
 from pipeline.extract.salesforce_auth import get_salesforce_client
@@ -120,10 +120,13 @@ def extract_object(sf, source: str, bronze_table: str, full_backfill: bool = Fal
 def _write_partition(partition_path: str, source: str, table: str, df: pd.DataFrame) -> None:
     """Parquet payload + manifest + `_SUCCESS` — written LAST, mirroring
     `cdc_initial_snapshot.py`'s discipline so a mid-write failure leaves no `_SUCCESS` and
-    the promotion gate correctly treats the partition as incomplete."""
-    out_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_dir / "part-00000.parquet", engine="pyarrow", index=False)
+    the promotion gate correctly treats the partition as incomplete. Real S3 when
+    `partition_path` resolves to `s3://` (real AWS creds present, `pipeline.common.s3_io`),
+    local-disk fallback otherwise — same dual-mode `pipeline.common.lake_paths` already
+    promises (2026-07-16 fix: this previously always staged locally regardless of creds)."""
+    buf = io.BytesIO()
+    df.to_parquet(buf, engine="pyarrow", index=False)
+    s3_io.write_bytes(f"{partition_path}/part-00000.parquet", buf.getvalue())
 
     manifest = {
         "source": source, "table": table, "row_count": len(df),
@@ -131,8 +134,8 @@ def _write_partition(partition_path: str, source: str, table: str, df: pd.DataFr
     }
     manifest_json = json.dumps(manifest)
     manifest["checksum"] = hashlib.sha256(manifest_json.encode()).hexdigest()
-    (out_dir / "_manifest.json").write_text(json.dumps(manifest))
-    (out_dir / "_SUCCESS").write_text("")
+    s3_io.write_text(f"{partition_path}/_manifest.json", json.dumps(manifest))
+    s3_io.write_text(f"{partition_path}/_SUCCESS", "")
 
 
 def main(full_backfill: bool = False) -> int:
