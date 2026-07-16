@@ -12,6 +12,11 @@ data/
 *.parquet
 *.csv
 !seed/fixtures/**/*.csv
+# Small, static, checked-in seed reference table (D-12 FX conversion, ADR-005 Add #1) — not a
+# generated artifact and not real/downloaded data, so it belongs in the "never ignore" carve-out
+# alongside seed/fixtures/, same reasoning, different directory (built by seed/build_fx_rates.py
+# once, then committed like a fixture — nothing regenerates or overwrites it on a normal run).
+!seed/artifacts/fx_rates.csv
 
 # Python
 __pycache__/
