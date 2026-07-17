@@ -12,6 +12,7 @@ import json
 
 from pyspark.sql import DataFrame, SparkSession
 
+from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
 from pipeline.common.watermark import read_watermark, write_watermark
 
@@ -57,21 +58,33 @@ def extract_table(
 
     run_date = dt.date.today().isoformat()
     partition_path = layer_path("landing", source, table, f"dt={run_date}")
-    df.write.mode("overwrite").parquet(partition_path)
+    # Spark's native writer needs S3A (hadoop-aws) to target s3:// directly — local-mode Spark
+    # doesn't have that wired in (pipeline/common/spark_session.py only adds Delta + JDBC-driver
+    # Maven packages), so write to a local staging dir first (same /tmp/s3_staging/ convention
+    # promotion_gate.py already uses for CDC/OBP), then push the bytes up via s3_io/boto3 —
+    # mirrors the Salesforce S3 fix (2026-07-17, staff-DE ruling): avoids a version-fragile
+    # hadoop-aws/aws-java-sdk-bundle JAR stack, and avoids collecting large tables (PaySim 6.36M
+    # rows, Home Credit installments_payments ~13.6M rows) into a pandas/driver buffer, since
+    # Spark still writes/spills the parquet locally, not through a Python-side collect.
+    local_dir = partition_path.replace("s3://", "/tmp/s3_staging/") if s3_io.is_s3(partition_path) else partition_path
+    df.write.mode("overwrite").parquet(local_dir)
 
     row_count = df.count()
     new_watermark = dt.datetime.now(dt.timezone.utc).isoformat()
-    _write_manifest(partition_path, source, table, row_count, spark)
+    _write_manifest(local_dir, source, table, row_count)
+    if s3_io.is_s3(partition_path):
+        s3_io.upload_dir(local_dir, partition_path)
     write_watermark(source, table, new_watermark)
 
     return partition_path
 
 
-def _write_manifest(partition_path: str, source: str, table: str, row_count: int, spark: SparkSession) -> None:
+def _write_manifest(local_dir: str, source: str, table: str, row_count: int) -> None:
     """Manifest + `_SUCCESS` — the transport-integrity evidence the Landing->Bronze
     promotion gate checks (ADR-003/D-15). Written LAST, only after the data write above
     completed, so a mid-write failure leaves no `_SUCCESS` and the gate correctly treats
-    the partition as incomplete."""
+    the partition as incomplete. Written to the same local dir the parquet write used —
+    `s3_io.upload_dir()` pushes both up to S3 together (see extract_table above)."""
     manifest = {
         "source": source, "table": table, "row_count": row_count,
         "written_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -79,15 +92,5 @@ def _write_manifest(partition_path: str, source: str, table: str, row_count: int
     manifest_json = json.dumps(manifest)
     manifest["checksum"] = hashlib.sha256(manifest_json.encode()).hexdigest()
 
-    sc = spark.sparkContext
-    hadoop_conf = sc._jsc.hadoopConfiguration()
-    fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_conf)
-    Path = sc._jvm.org.apache.hadoop.fs.Path
-
-    def _write(name: str, content: str) -> None:
-        out = fs.create(Path(f"{partition_path}/{name}"))
-        out.write(bytearray(content.encode("utf-8")))
-        out.close()
-
-    _write("_manifest.json", json.dumps(manifest))
-    _write("_SUCCESS", "")
+    s3_io.write_text(f"{local_dir}/_manifest.json", json.dumps(manifest))
+    s3_io.write_text(f"{local_dir}/_SUCCESS", "")
