@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import lit
@@ -89,11 +88,15 @@ def promote_partition(spark: SparkSession, source: str, table: str, partition_pa
     """mode: 'batch' (JDBC/API pull, already-deduped-at-Silver) or 'cdc' (dedup here on
     (pk_value, op, seq), R-36/R-37). Returns True if promoted, False if quarantined.
 
-    'cdc' (Teradata) and the `response.json` batch shape (OBP) still read via the legacy
-    local-staging path — `cdc_common.py`/`obp_client.py` haven't been migrated to real S3 I/O
-    yet (named follow-up, staff-DE ruling 2026-07-16); `_landing_partitions` below won't
-    enumerate any partitions for those sources once AWS creds are present (nothing of theirs
-    is actually in S3 yet), so this branch is not exercised until that follow-up lands."""
+    Reads Landing directly from `partition_path` via Spark's native reader (S3A) regardless of
+    shape (parquet / verbatim JSON) — this stage only ever runs on the Databricks cluster
+    (Bronze Delta writes need S3A, which local Spark doesn't have), so there is never a reason
+    to read from local `/tmp/s3_staging/` here; that path belongs solely to the LANDING-write
+    side's local-staging-then-upload trick (`s3_io.upload_dir`), not promotion. Previously 'cdc'
+    (Teradata) and the `response.json` batch shape (OBP) hardcoded a local-staging read instead
+    — harmless while `cdc_common.py`/`obp_client.py` never uploaded anything to S3 at all, but a
+    real latent bug once they did (2026-07-17 fix): Landing lands on Databricks-unreachable
+    local disk in this Codespace, promotion runs on a different machine entirely."""
     try:
         _check_success_marker(partition_path)
         manifest = _load_manifest(partition_path)
@@ -101,8 +104,7 @@ def promote_partition(spark: SparkSession, source: str, table: str, partition_pa
         _check_pagination_reconciled(manifest)
 
         if mode == "cdc":
-            partition_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))
-            events_df = spark.read.json(str(partition_dir / "events.json"))
+            events_df = spark.read.json(f"{partition_path}/events.json")
             events_df = events_df.withColumn("source", lit(source)).withColumn("table", lit(table))
             _check_schema_drift(spark, source, f"{table}_cdc", events_df)
             _promote_cdc(spark, source, table, events_df)
@@ -112,8 +114,7 @@ def promote_partition(spark: SparkSession, source: str, table: str, partition_pa
             # land a single response.json. Same signal _check_checksum already uses to detect
             # payload-file-shaped partitions.
             if s3_io.exists(f"{partition_path}/response.json"):
-                partition_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))
-                batch_df = spark.read.json(str(partition_dir / "response.json"))
+                batch_df = spark.read.json(f"{partition_path}/response.json")
             else:
                 batch_df = spark.read.parquet(partition_path)
             if not batch_df.columns:
@@ -142,8 +143,7 @@ def _promote_cdc(spark: SparkSession, source: str, table: str, events_df) -> Non
     (pk_value, op, seq) before appending, so a redelivered poll never double-counts
     (R-36/R-37) — Bronze still ends up append-only/verbatim (D-05), just deduped."""
     bronze_path = layer_path("bronze", source, f"{table}_cdc")
-    bronze_dir = Path(bronze_path.replace("s3://", "/tmp/s3_staging/"))
-    if bronze_dir.exists():
+    if s3_io.prefix_has_objects(bronze_path):
         existing = spark.read.format("delta").load(bronze_path).select("pk_value", "op", "seq")
         events_df = events_df.join(existing, on=["pk_value", "op", "seq"], how="left_anti")
     events_df.write.format("delta").mode("append").save(bronze_path)

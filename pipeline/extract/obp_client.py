@@ -31,6 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
 
 MAX_RETRIES = 5
@@ -155,6 +156,12 @@ def _land(items: list[dict], name: str) -> str:
     }
     (out_dir / "_manifest.json").write_text(json.dumps(manifest))
     (out_dir / "_SUCCESS").write_text("")
+
+    # Local staging was previously the FINAL location (never pushed to S3 at all) — real AWS
+    # creds should mean real S3, same fix already applied to jdbc_batch_common.py/cdc_common.py
+    # (2026-07-17).
+    if s3_io.is_s3(partition_path):
+        s3_io.upload_dir(str(out_dir), partition_path)
     return partition_path
 
 
