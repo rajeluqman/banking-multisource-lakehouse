@@ -2,11 +2,17 @@
 """`dim_customer` — the golden record (ADR-005). Type 1 SCD (overwrite each run — no
 history tracking in v1, named as deliberately out in journey/04_DATA_MODEL.md).
 
-Survivorship: source priority CRM(1, sil_client via Salesforce, ADR-006 Add #2) > core(2, OBP) >
-loans(3, sil_application) > cards(4, sil_card_txn); within a customer_id, attributes come
-from the highest-priority source that HAS that customer (a customer only in cards, priority
-4, still gets a row — survivorship picks the best AVAILABLE source, it doesn't require CRM
-presence).
+Survivorship: source priority CRM(1, sil_client via Salesforce, ADR-006 Add #2) >
+loans(3, sil_application) > cards(4, sil_card_txn) — numeric ranks per
+`seed/build_xwalk.py` SOURCE_PRIORITY (rank 2 is reserved for OBP, unused: ADR-005
+Addendum #2, OBP is NOT a survivorship tier, it is Silver-terminal and never enters the
+golden record). Within a customer_id, attributes come from the highest-priority source
+that HAS that customer (a customer only in cards, priority 4, still gets a row —
+survivorship picks the best AVAILABLE source, it doesn't require CRM presence).
+`_candidates()` below unions only berka + home_credit — PaySim (`sil_card_txn`) carries no
+demographic columns (no birth_date/gender/district), so a cards-tier candidate would
+contribute only NULLs already implied by the final left join at `dim = xwalk... join(...,
+"left")`; omitting it is a no-op, not a missing tier.
 """
 
 from __future__ import annotations
