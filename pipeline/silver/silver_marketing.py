@@ -55,6 +55,16 @@ def build_sil_campaign_response(spark: SparkSession) -> None:
              .withColumnRenamed("balance", "avg_yearly_balance") \
              .withColumnRenamed("poutcome", "prior_campaign_outcome") \
              .withColumnRenamed("y", "subscribed_term_deposit")
+    # journey/05_STTM.md declares both boolean; the UCI bank-marketing source encodes them as
+    # "yes"/"no" strings, passed through verbatim until now — real, live-caught alongside the
+    # PaySim is_fraud gap (mart_customer_360.py's `== True` would have hit the same crash
+    # class the moment it read this column). A blind `.cast("boolean")` would silently produce
+    # NULL for "yes"/"no" (Spark only recognizes "true"/"false"/"1"/"0"), so this is an explicit
+    # equality check, not a cast — also fixes a latent silent-NULL bug in
+    # mart_risk_segment.py's `credit_in_default.cast("int")` comparison, which currently always
+    # NULLs out `default_disagreement` against a string-typed column.
+    df = df.withColumn("credit_in_default", col("credit_in_default") == "yes") \
+           .withColumn("subscribed_term_deposit", col("subscribed_term_deposit") == "yes")
     merge_upsert(spark, df, "silver", "campaign_response", "customer_id")
 
 

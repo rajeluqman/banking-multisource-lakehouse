@@ -69,7 +69,7 @@ def build(spark: SparkSession) -> None:
             col("trans_id").alias("txn_id"), col("customer_id"),
             col("date").alias("txn_ts"), col("trans.type").alias("txn_type"),
             col("amount"), col("currency"),
-            lit(0).cast("long").alias("is_fraud"),  # match sil_card_txn's is_fraud (long 0/1, not boolean)
+            lit(False).alias("is_fraud"),  # match sil_card_txn's is_fraud (now real boolean — silver_fraud.py cast fix, this session)
             lit("berka").alias("source_system"),
         )
     )

@@ -11,6 +11,7 @@ dedicated Codespace (BUILD_REPORT.md).
 from __future__ import annotations
 
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
 
 from pipeline.common.lake_paths import layer_path
 from pipeline.silver.common import mask_last4, merge_upsert
@@ -23,6 +24,13 @@ def build_sil_card_txn(spark: SparkSession) -> None:
     journey/06_DQ_PLAN.md)."""
     df = spark.read.format("delta").load(layer_path("bronze", "mssql", "paysim_transactions"))
     df = df.withColumnRenamed("isFraud", "is_fraud").withColumnRenamed("isFlaggedFraud", "is_flagged_fraud")
+    # journey/05_STTM.md declares both boolean; MSSQL JDBC lands them as BIGINT (0/1) — real,
+    # live-caught: fact_card_fraud.py's `col("is_fraud") == True` crashed under ANSI mode
+    # (DATATYPE_MISMATCH, BIGINT vs BOOLEAN) the first time this ever ran against real Silver
+    # data. Cast here so Silver actually matches its own locked STTM contract, rather than
+    # loosening the Gold-layer comparison to match an under-typed Silver column.
+    df = df.withColumn("is_fraud", col("is_fraud").cast("boolean")) \
+           .withColumn("is_flagged_fraud", col("is_flagged_fraud").cast("boolean"))
     df = df.withColumnRenamed("type", "txn_type")  # journey/05_STTM.md sil_card_txn.txn_type <- PaySim type
     df = mask_last4(df, "nameOrig").withColumnRenamed("nameOrig", "name_orig_masked")
     merge_upsert(spark, df, "silver", "card_txn", "txn_id")
