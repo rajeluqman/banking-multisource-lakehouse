@@ -3,41 +3,41 @@
 ## ▶ RESUME HERE (read this first)
 
 **2026-07-17 (tenth session) — ✅ journey/08 evidence refreshed against REAL full-Kaggle-scale S3
-Gold ($0, local Spark, read-only) — 7/10 BQs PROVEN clean, 2 live defects + 1 reconciliation
-regression found; **BQ-04 fixed same session** (governed, `@staff-data-engineer`-approved, locally
-re-verified); BQ-09/BQ-10 remain open, queued below.**
+Gold — 8/10 BQs PROVEN, **BQ-04 fixed + redeployed + boto3-artifact-verified on the canonical S3
+table**, BQ-10's root cause CONFIRMED (fix pending sign-off), BQ-09 remains an open cost/scope
+decision.**
 
 Ran the actual BQ-01..10 mart queries with local Spark (`JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`)
 against `s3://banking-lakehouse-pipeline/banking/gold/` directly (ad hoc `hadoop-aws:3.3.4` S3A
-config in a scratch script only — no pipeline file touched for the read-only refresh itself) to
-replace the stale 2026-07-15 dev-loop-scale numbers (`journey/08_SERVING_AND_EVIDENCE.md`'s old
-`fact_txn` 20,750-row sample) with real numbers from the now-real full-scale Gold (`fact_txn`
-6,363,370 rows, PaySim alone 6,362,620). Full detail: `journey/08_SERVING_AND_EVIDENCE.md`'s
-"Per-BQ evidence (2026-07-17...)" section (top of file, historical 07-15 section kept below it,
-marked superseded).
+config in a scratch script only) to replace the stale 2026-07-15 dev-loop-scale numbers
+(`journey/08_SERVING_AND_EVIDENCE.md`'s old `fact_txn` 20,750-row sample) with real numbers from
+the now-real full-scale Gold (`fact_txn` 6,363,370 rows, PaySim alone 6,362,620). Full detail:
+`journey/08_SERVING_AND_EVIDENCE.md`'s "Per-BQ evidence (2026-07-17...)" section (top of file,
+historical 07-15 section kept below it, marked superseded).
 
 - **BQ-01, 02, 03, 05, 06, 07, 08 — clean, PROVEN at real full scale**, numbers refreshed.
-- **BQ-04 — FIXED this session, governed properly.** Owner picked this from the 3 findings to fix
-  now. Root cause: `mart_loan_funnel.py` joined `application` (307,511 rows, 1:1 `SK_ID_CURR`) to
-  `previous_application` (1,670,214 rows, ~4.9 rows per `SK_ID_CURR`) without dedup —
-  `application_count` was the fanned-out join's `count(*)` (1,430,155), not distinct applications.
-  Per CLAUDE.md ("No Gold/marts work proceeds without `@staff-data-engineer` sign-off" —
-  `pipeline/gold/` is a governed path, `gates/framework.yml`), convened `@staff-data-engineer`
-  before editing: ruled **Option A** — aggregate `application_count` from `application` alone (its
-  native 1:1 grain), aggregate `approval_rate_pct`/`avg_days_to_decision` separately from the
-  `previous_application` join, join the two aggregates at `app_month`. Rejected Option B
-  (collapsing `previous_application` to one row per customer) as "destroying signal ... biases
-  approval_rate/avg_days toward recency and survivorship." Also schema-verified
-  `DAYS_DECISION`/`NAME_CONTRACT_STATUS` exist on real `sil_previous_application` (cleared the
-  `(unverified)` tag in `journey/03_DATA_REQUIREMENTS.md`) before writing code that depends on
-  them. Fix implemented in `pipeline/gold/mart_loan_funnel.py`, locally re-verified read-only
-  against real S3 Silver (no write): `application_count=307511` (exact match), `approval_rate_pct
-  =62.68`, `avg_days_to_decision=880.37`, named as an event-weighted proxy (not the current
-  application's own outcome). `py_compile` + `gates/boundary_contract.py` +
-  `gates/doc_reference_contract.py` all green. **NOT yet redeployed to the canonical S3 Gold
-  table** — that requires a Databricks Gold job run, which this session's environment does not
-  trigger (CLAUDE.md: source-side/cluster compute runs in whichever environment executes the
-  pipeline, not this session) — next-session or owner action.
+- **BQ-04 — FIXED, REDEPLOYED, ARTIFACT-VERIFIED.** Root cause: `mart_loan_funnel.py` joined
+  `application` (307,511 rows, 1:1 `SK_ID_CURR`) to `previous_application` (1,670,214 rows, ~4.9
+  rows per `SK_ID_CURR`) without dedup — `application_count` was the fanned-out join's `count(*)`
+  (1,430,155), not distinct applications. Per CLAUDE.md ("No Gold/marts work proceeds without
+  `@staff-data-engineer` sign-off" — `pipeline/gold/` is governed), convened `@staff-data-engineer`
+  before editing: ruled **Option A** — aggregate `application_count` from `application` alone
+  (native 1:1 grain), aggregate `approval_rate_pct`/`avg_days_to_decision` separately from the
+  `previous_application` join, join the two aggregates at `app_month`. Rejected collapsing
+  `previous_application` to one row per customer as "destroying signal ... biases approval_rate/
+  avg_days toward recency and survivorship." Schema-verified `DAYS_DECISION`/`NAME_CONTRACT_STATUS`
+  exist on real `sil_previous_application` first (cleared the `(unverified)` tag in
+  `journey/03_DATA_REQUIREMENTS.md`). Fixed, locally re-verified read-only against real S3 Silver
+  (`application_count=307511` exact match), all 4 gates + 7/7 tests green, committed on
+  `fix/bq04-loan-funnel-grain-fanout`, **PR #10 merged to `main`** (CI gates+tests both passed).
+  **Redeployed**: Databricks job `456069514400579` run `1024722577817236` triggered scoped to just
+  the `mart_loan_funnel` task (`only: ["mart_loan_funnel"]` — all 22 other tasks correctly
+  `SKIPPED`), cluster `0715-022729-6j0g8jhn` auto-started from `TERMINATED`, `result_state=SUCCESS`.
+  **Per ADR-009's Incident Commander doctrine (never trust job SUCCESS alone), independently
+  verified the ARTIFACT**: `_delta_log` version 1 commitInfo via boto3 (`operation=WRITE
+  mode=Overwrite jobRunId=1024722577817236`), then re-read the canonical table directly —
+  `application_count=307511, approval_rate_pct=62.68, avg_days_to_decision=880.37`, matches the
+  local repro exactly. BQ-04 is fully closed out.
 - **BQ-09 — live identity-coverage gap found (NOT fixed — owner deferred, it's a cost/scope
   decision not a code fix)**: `dim_customer_xwalk`'s PaySim leg still carries only 32,976 sampled
   native keys (`seed/build_xwalk.py`'s `--paysim-sample` flag, a deliberate D-14 dev-loop-scale
@@ -46,23 +46,37 @@ marked superseded).
   resolve to a `customer_id`. Confirmed NOT a relapse of the session-3-fixed masking bug (the
   sampled population's join is 100% clean) — the xwalk was never rebuilt to match Bronze/Silver's
   real full-scale reseed.
-- **BQ-10 — new small reconciliation regression, not investigated (owner deferred)**:
-  `mart_pipeline_health` shows `obp` bronze=20/silver=21 (`reconciled=false`), stable across all 3
-  runs captured this session; the 07-15 evidence had `obp` 20/20 reconciled=true. Other 4 sources
-  (postgres/mssql/salesforce/teradata) all reconciled=true at real full scale.
+- **BQ-10 — root cause CONFIRMED this session (investigation done, fix NOT yet applied — owner
+  asked to investigate only, not fix)**: `mart_pipeline_health` shows `obp` bronze=20/silver=21
+  (`reconciled=false`). Root cause, verified via `obp_accounts`' own `_delta_log` history (not
+  guessed): `pipeline/silver/common.py`'s `mask_last4()` masks any account ID under 4 characters to
+  `NULL`; one of OBP's 20 real accounts has a short raw `id`. Delta `MERGE ... ON t.pk = s.pk`
+  never matches `NULL = NULL`, so `merge_upsert()`'s `whenNotMatchedInsertAll()` inserts a fresh
+  duplicate NULL row on EVERY Silver rebuild, forever — confirmed by the actual history (version 0:
+  20 rows incl. 1 NULL; version 1 MERGE, same unchanged 20 Bronze rows:
+  `numTargetRowsMatchedUpdated=19, numTargetRowsInserted=1`, not 20 matched). **This is systemic**:
+  any Silver table where a masked column is also the merge key will do this — not OBP-specific.
+  Needs `@staff-data-engineer` sign-off before a fix (`pipeline/silver/` is governed, cites D-07
+  masking doctrine).
+
+**Correction to a claim made earlier in this same session**: this environment DOES have working
+Databricks CLI + credentials and can trigger/monitor job runs (`databricks jobs run-now`,
+`jobs get-run`) — the earlier assumption that "this session's environment does not trigger
+Databricks jobs" (based on CLAUDE.md's source-side-compute note, which is actually scoped to
+Docker/SAP HANA/Teradata connections, not Databricks job triggers) was wrong and is corrected here
+rather than left silently stale.
 
 **Next session — concrete candidates, in priority order:**
-1. **Redeploy BQ-04's fix to the canonical S3 Gold table** — trigger the Databricks Gold job (just
-   the `mart_loan_funnel` task) from whichever environment actually runs the pipeline; re-verify
-   via `boto3`/Databricks read-back per the established "never trust job SUCCESS alone" discipline
-   (ADR-009), not just the local repro already done.
+1. **BQ-10 fix**: convene `@staff-data-engineer` on the `mask_last4()` + `merge_upsert()` NULL-key
+   defect — decide fix-at-source (e.g. skip/quarantine short-ID rows before masking, per D-07) vs.
+   a different merge-key strategy, then audit whether any OTHER Silver table has the same
+   masked-column-is-the-merge-key shape (blast-radius enumeration, ADR-009 discipline) before
+   fixing just OBP.
 2. **BQ-09 fix/decision**: `@staff-data-engineer` + `@finops` — either rebuild
    `dim_customer_xwalk`'s PaySim leg at (some larger fraction of) full scale, accept the sampled-
    customer-population design permanently and document it as intentional in journey/04, or some
    middle ground. This is a real cost/scope trade-off, not a pure bug fix.
-3. **BQ-10 obp investigation**: why did `obp` silver row count (21) exceed bronze (20)? Quick,
-   likely cheap to root-cause.
-4. Fasa E serving / local smoke-DAG / the 4 un-Silver'd Home Credit tables — unchanged from the
+3. Fasa E serving / local smoke-DAG / the 4 un-Silver'd Home Credit tables — unchanged from the
    prior entry below, still not started, still not re-litigated.
 
 ---
