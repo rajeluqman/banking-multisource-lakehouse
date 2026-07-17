@@ -2,6 +2,71 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-17 (tenth session) — ✅ journey/08 evidence refreshed against REAL full-Kaggle-scale S3
+Gold ($0, local Spark, read-only) — 7/10 BQs PROVEN clean, 2 live defects + 1 reconciliation
+regression found; **BQ-04 fixed same session** (governed, `@staff-data-engineer`-approved, locally
+re-verified); BQ-09/BQ-10 remain open, queued below.**
+
+Ran the actual BQ-01..10 mart queries with local Spark (`JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`)
+against `s3://banking-lakehouse-pipeline/banking/gold/` directly (ad hoc `hadoop-aws:3.3.4` S3A
+config in a scratch script only — no pipeline file touched for the read-only refresh itself) to
+replace the stale 2026-07-15 dev-loop-scale numbers (`journey/08_SERVING_AND_EVIDENCE.md`'s old
+`fact_txn` 20,750-row sample) with real numbers from the now-real full-scale Gold (`fact_txn`
+6,363,370 rows, PaySim alone 6,362,620). Full detail: `journey/08_SERVING_AND_EVIDENCE.md`'s
+"Per-BQ evidence (2026-07-17...)" section (top of file, historical 07-15 section kept below it,
+marked superseded).
+
+- **BQ-01, 02, 03, 05, 06, 07, 08 — clean, PROVEN at real full scale**, numbers refreshed.
+- **BQ-04 — FIXED this session, governed properly.** Owner picked this from the 3 findings to fix
+  now. Root cause: `mart_loan_funnel.py` joined `application` (307,511 rows, 1:1 `SK_ID_CURR`) to
+  `previous_application` (1,670,214 rows, ~4.9 rows per `SK_ID_CURR`) without dedup —
+  `application_count` was the fanned-out join's `count(*)` (1,430,155), not distinct applications.
+  Per CLAUDE.md ("No Gold/marts work proceeds without `@staff-data-engineer` sign-off" —
+  `pipeline/gold/` is a governed path, `gates/framework.yml`), convened `@staff-data-engineer`
+  before editing: ruled **Option A** — aggregate `application_count` from `application` alone (its
+  native 1:1 grain), aggregate `approval_rate_pct`/`avg_days_to_decision` separately from the
+  `previous_application` join, join the two aggregates at `app_month`. Rejected Option B
+  (collapsing `previous_application` to one row per customer) as "destroying signal ... biases
+  approval_rate/avg_days toward recency and survivorship." Also schema-verified
+  `DAYS_DECISION`/`NAME_CONTRACT_STATUS` exist on real `sil_previous_application` (cleared the
+  `(unverified)` tag in `journey/03_DATA_REQUIREMENTS.md`) before writing code that depends on
+  them. Fix implemented in `pipeline/gold/mart_loan_funnel.py`, locally re-verified read-only
+  against real S3 Silver (no write): `application_count=307511` (exact match), `approval_rate_pct
+  =62.68`, `avg_days_to_decision=880.37`, named as an event-weighted proxy (not the current
+  application's own outcome). `py_compile` + `gates/boundary_contract.py` +
+  `gates/doc_reference_contract.py` all green. **NOT yet redeployed to the canonical S3 Gold
+  table** — that requires a Databricks Gold job run, which this session's environment does not
+  trigger (CLAUDE.md: source-side/cluster compute runs in whichever environment executes the
+  pipeline, not this session) — next-session or owner action.
+- **BQ-09 — live identity-coverage gap found (NOT fixed — owner deferred, it's a cost/scope
+  decision not a code fix)**: `dim_customer_xwalk`'s PaySim leg still carries only 32,976 sampled
+  native keys (`seed/build_xwalk.py`'s `--paysim-sample` flag, a deliberate D-14 dev-loop-scale
+  cap, BUILD_REPORT.md Task 4) against the real Bronze/Silver PaySim population's 6,353,307
+  distinct `nameOrig` identities — so only 20,859/6,363,370 (0.33%) of real `fact_txn` rows
+  resolve to a `customer_id`. Confirmed NOT a relapse of the session-3-fixed masking bug (the
+  sampled population's join is 100% clean) — the xwalk was never rebuilt to match Bronze/Silver's
+  real full-scale reseed.
+- **BQ-10 — new small reconciliation regression, not investigated (owner deferred)**:
+  `mart_pipeline_health` shows `obp` bronze=20/silver=21 (`reconciled=false`), stable across all 3
+  runs captured this session; the 07-15 evidence had `obp` 20/20 reconciled=true. Other 4 sources
+  (postgres/mssql/salesforce/teradata) all reconciled=true at real full scale.
+
+**Next session — concrete candidates, in priority order:**
+1. **Redeploy BQ-04's fix to the canonical S3 Gold table** — trigger the Databricks Gold job (just
+   the `mart_loan_funnel` task) from whichever environment actually runs the pipeline; re-verify
+   via `boto3`/Databricks read-back per the established "never trust job SUCCESS alone" discipline
+   (ADR-009), not just the local repro already done.
+2. **BQ-09 fix/decision**: `@staff-data-engineer` + `@finops` — either rebuild
+   `dim_customer_xwalk`'s PaySim leg at (some larger fraction of) full scale, accept the sampled-
+   customer-population design permanently and document it as intentional in journey/04, or some
+   middle ground. This is a real cost/scope trade-off, not a pure bug fix.
+3. **BQ-10 obp investigation**: why did `obp` silver row count (21) exceed bronze (20)? Quick,
+   likely cheap to root-cause.
+4. Fasa E serving / local smoke-DAG / the 4 un-Silver'd Home Credit tables — unchanged from the
+   prior entry below, still not started, still not re-litigated.
+
+---
+
 **2026-07-17 (ninth session) — ✅ GOLD LAYER WIRED + PROVEN END-TO-END, ALL 16 GOLD TABLES REAL
 IN S3, independently `boto3`-verified. Merged PR #4 (OBP fix, was still unmerged at session
 start — confirmed via `git merge-base`, not GitHub's PR status), then wired 17 Gold tasks into

@@ -38,10 +38,16 @@
   `journey/09_SECURITY_AND_ACCESS.md` §2; masking mechanics in `journey/06_DQ_PLAN.md`.
 
 ## Assumptions
-- (unverified) Home Credit's `previous_application.DAYS_DECISION` is a usable proxy for
-  application→decision lag for BQ-04 — must be confirmed against the actual column once the real
-  Kaggle CSV is on disk (see journey/01 — this is a genuine schema assumption, not yet checked
-  against a live file this session).
+- **VERIFIED 2026-07-17** (tenth session, BQ-04 grain-fix work): `previous_application.DAYS_DECISION`
+  (long) and `NAME_CONTRACT_STATUS` (string) both exist exactly as assumed — confirmed by reading
+  `sil_previous_application`'s real schema off S3 (`printSchema()`, real Home Credit data,
+  1,670,214 rows). `DAYS_DECISION` is a usable lag proxy (sample values: -73, -164, -301, -512,
+  -781 — negative days-before-current-application, as expected). No longer unverified. Still a
+  **named proxy, not a perfect measure** (`@staff-data-engineer` ruling, journey/08 BQ-04 row):
+  `previous_application` is a DIFFERENT set of each customer's historical prior loans, not the
+  current application itself — `application` carries no approval/decision field of its own, so
+  `approval_rate_pct`/`avg_days_to_decision` are an event-weighted proxy over each month-cohort's
+  prior-loan population, not a measure of the current application's own outcome.
 - (unverified) Berka's `district` table carries enough geographic/demographic detail to support a
   "segment" cut if income-band alone proves too coarse — not required for v1's locked BQ list, but
   flagged in case BQ-05/06 need a second cut later (would require an ADR-000 intake, not an
