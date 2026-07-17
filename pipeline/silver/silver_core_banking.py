@@ -22,17 +22,28 @@ from pipeline.silver.common import mask_last4, merge_upsert
 
 
 def build_sil_obp_accounts(spark: SparkSession) -> None:
-    """OBP `accounts` -> `sil_obp_accounts`. Passthrough, naming only (STTM)."""
+    """OBP `accounts` -> `sil_obp_accounts`. `account_id` stays RAW — it is both this
+    table's MERGE key and `sil_obp_transactions.account_id`'s FK target, and Silver is a
+    restricted, non-analyst-visible layer (journey/09_SECURITY_AND_ACCESS.md §3) that OBP
+    never leaves (Silver-terminal, ADR-005 Add #2) — so masking it would break MERGE/FK
+    correctness for zero exposure benefit. `account_id_last4` is the D-07 masked derived
+    column for anything that DOES need to expose identity outward.
+
+    Live-caught bug fixed here (BQ-10, 2026-07-17): masking `account_id` in place broke
+    the FK join against `sil_obp_transactions` (which always carried the raw id) AND
+    mask-to-NULL-under-4-chars silently duplicated a row on every Silver rebuild (Delta
+    MERGE never matches `NULL = NULL`)."""
     raw = spark.read.format("delta").load(layer_path("bronze", "obp", "accounts"))
     df = raw.select(col("id").alias("account_id"), col("bank_id"), col("label"))
-    df = mask_last4(df, "account_id")
+    df = mask_last4(df, "account_id", output_column="account_id_last4")
     merge_upsert(spark, df, "silver", "obp_accounts", "account_id")
 
 
 def build_sil_obp_transactions(spark: SparkSession) -> None:
-    """OBP `transactions` -> `sil_obp_transactions`. `this_account.id` resolves the owning
-    account (FK to `sil_obp_accounts`); `details.value` is this transaction's own amount
-    (distinct from `details.new_balance`, the running post-transaction balance)."""
+    """OBP `transactions` -> `sil_obp_transactions`. `this_account.id` (kept RAW, matching
+    `sil_obp_accounts.account_id`) resolves the owning account (FK to `sil_obp_accounts`);
+    `details.value` is this transaction's own amount (distinct from `details.new_balance`,
+    the running post-transaction balance)."""
     raw = spark.read.format("delta").load(layer_path("bronze", "obp", "transactions"))
     df = raw.select(
         col("id").alias("transaction_id"),

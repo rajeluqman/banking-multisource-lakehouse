@@ -33,11 +33,19 @@ def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_
         df.write.format("delta").save(target_path)
 
 
-def mask_last4(df: DataFrame, column: str) -> DataFrame:
+def mask_last4(df: DataFrame, column: str, output_column: str | None = None) -> DataFrame:
     """D-07 — account/card numbers masked to last-4 only. A value shorter than 4 chars is
-    masked to NULL entirely rather than partially revealing a short identifier."""
+    masked to NULL entirely rather than partially revealing a short identifier.
+
+    Masking must never land on an identity/join key (2026-07-17, BQ-10 live fix,
+    journey/09_SECURITY_AND_ACCESS.md's D-07 clarification): pass `output_column` to write
+    the masked value to a NEW derived column instead of overwriting `column` in place —
+    required whenever `column` also serves as a table's MERGE key or an FK target, since
+    last-4 masking is lossy (suffix collisions) and NULL-for-short-values breaks MERGE's
+    own `NULL != NULL` re-run idempotency (a masked-to-NULL key duplicates every rebuild)."""
+    target = output_column or column
     return df.withColumn(
-        column,
+        target,
         when(length(col(column)) >= 4, substring(col(column), -4, 4)).otherwise(lit(None)),
     )
 
