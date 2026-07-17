@@ -2,6 +2,84 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-17 (eighth session) — ✅ PAYSIM (MSSQL) SCALED TO REAL S3 AT FULL 6.36M-ROW KAGGLE
+SCALE, end-to-end Landing→Bronze→Silver, independently boto3-verified. Branch
+`feat/paysim-real-scale-ingest` (commit `f56b635`), NOT pushed/PR'd yet — local commit only,
+owner has not yet seen the diff.** Summary:
+
+- **Real, unverified architecture gap confirmed by reading code (not assumed)**: local Spark
+  (this Codespace — Docker Postgres/MSSQL have no public IP, so JDBC extraction can only run
+  here, not on the Databricks cluster) has no S3A/`hadoop-aws` wired in
+  (`pipeline/common/spark_session.py`'s local-mode branch only adds Delta + JDBC Maven
+  packages), so `jdbc_batch_common.py`'s native `df.write.parquet(s3://...)` and raw Hadoop
+  `FileSystem` manifest write genuinely could not have worked. `@staff-data-engineer` ruled
+  (session-fresh, not extrapolated): write to a local staging dir first (Spark spills to disk,
+  no S3A needed), then push via the already-proven boto3 `s3_io` module — mirrors the
+  Salesforce fix, avoids a version-fragile `hadoop-aws`/`aws-java-sdk-bundle` JAR stack, avoids
+  collecting large tables into driver memory. Implemented: `pipeline/common/s3_io.py` gained
+  `upload_dir()`; `pipeline/extract/jdbc_batch_common.py` rewritten to use it.
+- **`@finops` fresh cost estimate (not extrapolated from Berka's $15/2hr)**: PaySim GO at full
+  6.36M-row scale (~$15/2hr ceiling, mirrors Berka); Home Credit's `installments_payments`
+  (~13.6M rows) flagged for capping (1–2M rows), decide separately, NOT done this session.
+  `@scope-guardian`: no fresh ADR-000 needed — PaySim/Home Credit/Teradata were already locked
+  into scope by ADR-006; this is executing previously-approved architecture at real scale, not
+  new scope. Flagged risk (for future sessions, not yet triggered): don't let "real data now"
+  invite new marts/Gold-layer additions beyond what's already BQ-scoped.
+- **Two real bugs found live, not in planning, both fixed same session:**
+  1. `s3_io.upload_dir()`'s first version only pushed what was in the local staging dir —
+     never deleted stale S3 objects a prior run left behind. Since each Spark write gets a new
+     UUID part-filename, a re-run's `mode("overwrite")` correctly replaced the LOCAL dir but
+     silently left old S3 objects sitting alongside the new ones (caught live: an old 20K-row
+     test partition sat next to the new 6.36M-row one in the same `dt=` partition until fixed).
+     Fixed: `upload_dir()` now clears the destination prefix first (`_delete_prefix`).
+  2. `seed/mssql/load_paysim.py`'s whole-file load path held the full 6.36M-row frame PLUS
+     full-size derived columns (uuid list, datetime series) in memory at once for the unsampled
+     (full-scale) case — live-observed dying silently (SIGTERM, zero DB progress each time,
+     ~60-70s in) well before any duration-based timeout would explain it, consistent with memory
+     pressure. The `--sample` path never hit this since it downsamples before the expensive
+     transforms. Fixed: chunked CSV read/transform/load (`CHUNK_SIZE=500_000`), plus
+     `fast_executemany=True` on the SQLAlchemy engine (default pyodbc executemany couldn't
+     finish 6.36M rows in a reasonable window at all — timed out with zero rows loaded).
+- **Docker containers were `Exited`** (confirmed via `docker ps -a`, matching the continuation
+  prompt's expectation) — `docker start banking_postgres banking_mssql`, both healthy.
+- **`databricks.yml`**: `git_branch` default `feat/salesforce-crm-swap` → `main` (branch was
+  already merged, PR #1). Added a `silver_fraud` task (depends on `promotion_gate_salesforce`,
+  which needed NO change — it already loops over all 5 sources' `SOURCE_TABLES` generically, so
+  it picked up `mssql.paysim_transactions` automatically once real Landing data existed).
+  Disclosed explicitly to the owner before deploying (per this project's own "don't expand the
+  DAB Job without disclosure" rule) — owner said "run".
+- **Real run proof, owner-triggered, independently boto3-verified (not trusted from job logs)**:
+  Landing `s3://banking-lakehouse-pipeline/banking/landing/mssql/paysim_transactions/dt=2026-07-17/`
+  (1 part file, 498,445,374 bytes, manifest `row_count=6362620`) → Bronze
+  `banking/bronze/mssql/paysim_transactions/` (7 objects, 498,582,666 bytes, genuine
+  `_delta_log/00000000000000000000.json` first commit) → Silver `banking/silver/card_txn/` (NOT
+  `silver/paysim_transactions/` — `silver_fraud.py` writes table name `card_txn`; a first guess
+  at the path was wrong, corrected before claiming success) (9 objects, 450,149,752 bytes, real
+  Delta commit). Databricks Job run `836817809593837`, all 3 tasks (`promotion_gate_salesforce`,
+  `silver_crm`, `silver_fraud`) `SUCCESS`; `promotion_gate` log: "1 partition(s) promoted, 0
+  quarantined" (correctly picked up only the new PaySim partition, left the already-promoted
+  Salesforce ones alone). Cluster `0715-022729-6j0g8jhn` confirmed `TERMINATED` after the run
+  (cost discipline).
+- **Installed the Databricks CLI locally this session** (`databricks/setup-cli` installer,
+  `sudo` needed for `/usr/local/bin`) — wasn't present in this Codespace before; `bundle
+  validate`/`deploy`/`run` all worked the same as the proven CI path.
+- All 4 gates + `python3 -m unittest discover tests` (7/7) green. Committed locally to a NEW
+  branch `feat/paysim-real-scale-ingest` (not `feat/salesforce-crm-swap`, which was semantically
+  about the Salesforce swap and already merged) — **NOT pushed, no PR opened yet**; owner has not
+  seen the diff, per this project's "don't self-merge without a real review chance" rule.
+
+**Next session**: (1) owner reviews the `feat/paysim-real-scale-ingest` diff, decide push/PR;
+(2) Home Credit (Postgres) — same S3-write mechanism now proven twice (Salesforce, PaySim), but
+needs its own `@finops` go/no-go on the `installments_payments` (~13.6M rows) capping question,
+not yet asked this session; (3) Teradata — still needs the owner to resume the ClearScape
+environment (auto-suspends on idle) before any live attempt, and its extractor is still on the
+old local-staging shim (named follow-up from session 7, not touched this session either); (4)
+`gates/boundary_contract.py`/`framework.yml` doc-sync check `@scope-guardian` flagged (not run
+this session): confirm governed-sources lists don't still describe PaySim/Home Credit/Teradata
+at sample-only scale now that real-scale ingest has started.
+
+---
+
 **2026-07-17 (continuation of seventh session) — ✅ FULL CD CYCLE PROVEN, end-to-end, via the
 actual GitHub Actions workflow (not a local approximation).** `cd.yml` `deploy-and-run` run
 [29548154621](https://github.com/rajeluqman/banking-multisource-lakehouse/actions/runs/29548154621):
