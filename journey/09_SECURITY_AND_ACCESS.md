@@ -44,6 +44,20 @@ shape `dapi[0-9a-f]{32}`, OBP DirectLogin header shape, OBP OAuth secret assignm
 Every non-public column gets a row — "sensitive" is flagged even where no regulation currently
 bites, so a future reader knows it was considered (this table itself is the audit trail).
 
+**Masking must never land on an identity/join key (2026-07-17 clarification, `@staff-data-engineer`
+ruling, BQ-10 live fix)**: last-4 masking is lossy — it collapses distinct raw values that share a
+suffix, and it breaks any MERGE/FK match against an unmasked counterpart (`NULL` for any value
+under 4 chars is a total loss, and `NULL != NULL` breaks MERGE's own re-run idempotency). Where a
+masked column doubles as a table's own MERGE key or a downstream FK target, masking must produce a
+**derived** column (e.g. `account_id_last4`); the raw value is retained for identity/FK resolution
+WITHIN restricted layers (Silver — §3's role matrix has no analyst-facing role reading Silver
+directly, R-31's "no analyst/serving role may read raw layers" spirit extends here) and is never
+propagated unmasked to Gold/serving. Live-caught: `pipeline/silver/silver_core_banking.py` masked
+`sil_obp_accounts.account_id` but left `sil_obp_transactions.account_id` (the FK) unmasked — the
+two could never join, and the mask-to-NULL-under-4-chars also silently duplicated a row on every
+Silver rebuild (`mart_pipeline_health`'s `obp` reconciliation, BQ-10). Fixed in
+`pipeline/silver/common.py`/`silver_core_banking.py`.
+
 ## 3. RBAC role matrix (role × layer × permission) — REAL GRANTs, Unity Catalog
 | Role | Layer / objects | Permission | Used by |
 |---|---|---|---|
