@@ -17,6 +17,13 @@ data/
 # alongside seed/fixtures/, same reasoning, different directory (built by seed/build_fx_rates.py
 # once, then committed like a fixture — nothing regenerates or overwrites it on a normal run).
 !seed/artifacts/fx_rates.csv
+# Same gap, same fix, one day later (2026-07-17): dim_customer_xwalk.csv (ADR-005/D-04, the
+# conformed MDM crosswalk every Gold table joins through) was never committed either — caught
+# live by a Databricks git_source Gold run (job 127330185225331) FileNotFoundError, the local
+# dev environment masked it the same way it masked fx_rates.csv's gap until real CI/cluster
+# execution exercised the git-sourced checkout. Same carve-out reasoning: deterministic,
+# built once by seed/build_xwalk.py, not real/downloaded data, not regenerated on a normal run.
+!seed/artifacts/dim_customer_xwalk.csv
 
 # Python
 __pycache__/
