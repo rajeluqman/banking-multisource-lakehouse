@@ -39,6 +39,13 @@ blocks the PR). Governance is code, not vigilance.
 5. **The planning docs are a MAP; the files on disk are the TERRITORY.** If a dataset column/file
    named in the CIL planning lab isn't actually there, STOP and surface it — do not improvise
    silently (this already happened once: see "Known blocker" below).
+6. **TWO-STRIKE rule (ADR-009, mechanical)** — if the same pipeline stage fails TWICE, or a fix
+   "succeeded" yet the symptom persists, STOP all paid execution and invoke
+   `@staff-data-engineer` as Incident Commander BEFORE any further cluster run. Born from a real
+   6-attempt fix-fail loop (BUILD_REPORT.md §24): classify code/state/environment, verify the
+   last fix at the ARTIFACT level (never trust run SUCCESS), enumerate the bug-class blast
+   radius, reproduce for free (local Spark needs
+   `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` here), THEN exactly one paid run.
 
 ## Project overview
 **Domain**: Banking / multi-source data platform simulation.
