@@ -41,11 +41,42 @@ which stayed green through every single failure. Full technical detail: BUILD_RE
 - Databricks Job run `127330185225331`: 6 attempts total (1 full run + 5 repairs) before
   `23/23 SUCCESS`. Cluster `0715-022729-6j0g8jhn` confirmed `TERMINATED` after.
 
-**Next session**: OBP stays Silver-terminal (settled, ADR-005 Add #2, do not re-litigate). The 4
-un-Silver'd Home Credit tables remain locked-scope-as-is. Gold is now fully proven for all 4
-seedable sources (Berka/Salesforce, PaySim, Teradata, Home Credit) — remaining candidate work is
-journey/08 evidence queries against the now-real Gold marts (BQ-01..10), or Fasa E serving
-(Snowflake external tables / DuckDB) if the owner wants to move forward there.
+**Same session, immediately after — ✅ ADR-009 (two-strike incident protocol) ratified, PR #9
+merged (`167dfe3`).** Owner reviewed the 6-attempt loop above, asked for a written breakdown of
+which fix came from which model (Sonnet found bugs #1-4 reactively; Opus diagnosed the Delta
+MERGE schema-enforcement root cause that broke the loop; Fable generalized it into a
+reproduce-locally-first method and found the Gold-layer relapse). Owner then commissioned a
+standing incident protocol so this doesn't require a human noticing mid-loop:
+- `.claude/agents/staff-data-engineer.md` — new **Incident Commander** section. **TWO-STRIKE
+  trigger** (mechanical, not judgment): same stage fails twice, OR a fix reports SUCCESS but the
+  symptom persists → mandatory `@staff-data-engineer` consult BEFORE any further paid execution.
+  Five written questions gate the retry (stop-the-spend; classify code/state/environment; verify
+  the last fix at the ARTIFACT level, never run status; enumerate the full blast radius and act
+  on every audit anomaly; reproduce for free + fix-trade-off, then exactly ONE paid run).
+- `governance/ADR/ADR-009-two-strike-incident-protocol.md` — full decision record, alternatives
+  rejected (zero-strike = too heavy; owner-triggers-escalation = vigilance not code, rejected on
+  the repo's own "governance is code, not vigilance" principle; local smoke-DAG = right idea,
+  deferred to its own ADR-000 intake — owner explicitly said KIV this session).
+- `CLAUDE.md` ANTI-SHORTCUT protocol item 6 — TWO-STRIKE rule now auto-loads every session
+  regardless of which model drives it.
+
+**Next session — concrete candidates, in priority order (owner has not yet picked one):**
+1. **Refresh `journey/08_SERVING_AND_EVIDENCE.md`'s per-BQ evidence.** Its current "10/10 PROVEN"
+   table is dated 2026-07-15 and was captured against a much smaller dev-loop run (e.g.
+   `fact_txn` 20,750 rows) — NOT this session's real full-Kaggle-scale S3 Gold data (PaySim alone
+   is 6.36M source rows). The evidence is stale relative to what Gold actually contains now. This
+   is free/cheap — local Spark reading the real S3 Gold tables, no cluster needed. Natural
+   immediate next step, recommended first.
+2. **Fasa E serving** (Snowflake external tables over Gold S3, or DuckDB fallback, + one Power BI
+   page for BQ-01/BQ-02) — journey/08 marks this explicitly optional; only worth doing if the
+   owner wants a serving-layer demo for the portfolio.
+3. **Local smoke-DAG** (run the full pipeline locally against a small sample before every real
+   deploy) — the owner's own idea from the ADR-009 discussion, explicitly KIV'd this session.
+   Needs its own ADR-000 intake (`@scope-guardian`) before any build — do not start silently.
+4. **NOT next-session work, named so it isn't silently forgotten**: the 4 un-Silver'd Home Credit
+   tables (`bureau_balance`/`POS_CASH_balance`/`credit_card_balance`/`installments_payments`)
+   stay locked-scope-as-is — no BQ needs them. OBP stays Silver-terminal (ADR-005 Add #2) — do
+   not re-litigate either.
 
 ---
 
