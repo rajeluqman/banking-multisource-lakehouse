@@ -122,3 +122,48 @@ stays named, not silently absent" (Decision line ~43, journey/04 §identity).
   (BQ-01/06/07/08 rows — OBP not a Gold contributor in v1), `pipeline/gold/fact_txn.py` docstring
   (OBP named-out, was a dangling to-do), `seed/build_xwalk.py` `SOURCE_PRIORITY` (`obp` marked
   reserved/unused).
+
+**Addendum #3 (2026-07-17, @staff-data-engineer sign-off) — `dim_customer_xwalk`'s CANONICAL
+(full D-14 scale) artifact moves from a git-committed CSV to an S3 Delta artifact; the D-14
+DEV-LOOP CSV stays git-committed, unchanged.** Not a grain or model change (still one row per
+`(customer_id, source_system)`, journey/04_DATA_MODEL.md) — a load-path fix, triggered by a real,
+live-caught BQ-09 finding (journey/08_SERVING_AND_EVIDENCE.md, 2026-07-17): the crosswalk's PaySim
+leg was still capped at a 32,976-row D-14 dev-loop sample (`seed/build_xwalk.py
+--paysim-sample`) while Bronze/Silver PaySim had been re-seeded to the real full 6,362,620-row
+canonical population in the same session — so 99.67% of real `fact_txn` PaySim rows resolved to no
+`customer_id` at all. journey/01_DATASET_AND_SOURCES.md line 59 (D-14) already mandates "full set
+for the canonical run" — this addendum finishes that already-locked requirement for the crosswalk,
+it does not reverse or amend D-14 itself.
+- **Why a load-path change, not just "rerun with a bigger `--paysim-sample`"**: at real full
+  PaySim scale (6,362,620 transactions, ~6.9M unique `C`-prefixed customer-shaped identifiers
+  across `nameOrig`+`nameDest`, R-09 excludes `M`-prefixed merchants), the resulting
+  `dim_customer_xwalk.csv` is ~278MB/7,236,379 rows. **No Git LFS is configured in this repo**
+  (`git config --get filter.lfs.clean` returns nothing meaningful, no `.gitattributes`) and GitHub
+  hard-rejects any single file over 100MB on a normal push — committing the full-scale artifact is
+  not a style preference, it is mechanically impossible without adding new infra. Git LFS was
+  considered and rejected: it would make git a data store for a Gold DIMENSION, doubling down on
+  the underlying anti-pattern (a 250MB+ generated table belongs in the S3 data plane like every
+  other Gold table, not in git) rather than fixing it.
+- **Ruling**: the small D-14 dev-loop CSV (`seed/artifacts/dim_customer_xwalk.csv`, ~12MB/345,857
+  rows) stays git-committed — same treatment as `dim_fx_rate`'s `fx_rates.csv` (Addendum #1), a
+  small hand-authored/bounded artifact genuinely code-adjacent. The full D-14 canonical artifact is
+  generated once locally (`seed/build_xwalk.py`'s memory-safe streaming build — see that file's
+  own "Memory note" docstring, unrelated OOM fix, not a design change) and written to S3 as a Delta
+  table under a Gold seed-artifact prefix (`banking/gold/_seed_artifacts/dim_customer_xwalk/`).
+  `pipeline/gold/dim_customer_xwalk.py` now prefers this S3 artifact when it exists, falling back
+  to the small git CSV otherwise — the dev loop (where no S3 artifact is ever written) is
+  unaffected, unchanged behavior.
+- **This does NOT touch the `git_source` "ship code, not data" boundary** (ADR-002 Add #6,
+  ADR-008's rejected-alternative "DAB uploads pipeline source" row) — that boundary bans shipping
+  PIPELINE CODE outside git; `dim_customer_xwalk` is Gold DATA (a conformed dimension, this ADR's
+  own subject), which has always belonged in the S3 data plane. The git-committed CSV was only ever
+  viable because dev-loop scale (12MB) made the anti-pattern invisible; the 278MB canonical size
+  merely exposed a pre-existing latent issue, this addendum corrects it rather than introducing a
+  new exception.
+- **Blast radius, named not hidden**: every Gold table that joins through `dim_customer_xwalk`
+  changes at canonical scale once this artifact is populated — `dim_customer`, `fact_txn`,
+  `fact_card_fraud`, `fact_loan_application`, `dq_currency_gate`, and every mart that reads any of
+  those (`mart_customer_360`, `mart_cross_sell`, `mart_dormancy`, `mart_daily_flows`,
+  `mart_risk_segment`, `mart_pipeline_health`). All must be rebuilt and re-verified after the
+  artifact lands — tracked in `journey/08_SERVING_AND_EVIDENCE.md`'s BQ-09 evidence row, cost
+  routed through `@finops-agent` before the redeploy.
