@@ -985,3 +985,77 @@ applies; expanding the DAB Job past the proven 2 stages needs `@finops`+`@scope-
 the other 3 sources (PaySim/Home Credit/Teradata) not yet run to real S3 (finops re-check owed
 before Home Credit's 13.6M-row table); Teradata-CDC/OBP extractors still on the local-staging
 shim. Cluster terminated; all 4 gates + 7 unit tests green.
+
+## 21. PaySim (MSSQL) scaled to real S3 at full 6.36M-row Kaggle scale (2026-07-17, eighth session)
+
+Scaled the proven Salesforce/Berka S3-write pattern to the first of the 3 remaining sources.
+Went through the full pre-flight discipline the continuation brief asked for: convened
+`@staff-data-engineer` (S3A mechanism — real, code-confirmed gap, not assumed), `@finops` (fresh
+cost estimate, not extrapolated from Berka), and `@scope-guardian` (scope re-confirmation) before
+touching anything, all in parallel, all in this session.
+
+**1. The local-Spark S3A gap was real, confirmed by reading code before asking anyone.**
+`pipeline/extract/jdbc_batch_common.py` wrote Landing partitions via native
+`df.write.parquet(s3://...)` and a raw Hadoop `FileSystem` manifest write — both need S3A, and
+`pipeline/common/spark_session.py`'s local-mode branch only wires in Delta + JDBC Maven packages,
+never `hadoop-aws`. Since Docker Postgres/MSSQL have no public IP, JDBC extraction can only run
+from this Codespace's local Spark, not the Databricks cluster — so this wasn't optional.
+`@staff-data-engineer` ruled: write to a local staging dir (Spark spills to disk, no S3A needed),
+then push via the already-proven boto3 `s3_io` module — mirrors the Salesforce fix exactly,
+avoids a version-fragile `hadoop-aws`/`aws-java-sdk-bundle` JAR stack, avoids collecting large
+tables into driver memory. `s3_io.py` gained `upload_dir()`; `jdbc_batch_common.py` rewritten.
+
+**2. `@finops`/`@scope-guardian` sign-off, not extrapolated.** finops: PaySim GO at full
+6.36M-row scale (~$15/2hr, mirrors Berka); Home Credit's `installments_payments` (~13.6M rows)
+flagged for capping — separate go/no-go, NOT decided this session. scope-guardian: no fresh
+ADR-000 needed, PaySim/Home Credit/Teradata were already locked into scope by ADR-006 — this is
+executing previously-approved architecture at real scale, not new capability.
+
+**3. Two real bugs, found live, both fixed same session (not planning-time, not hypothetical):**
+- `s3_io.upload_dir()` v1 only pushed what was locally staged — never deleted a prior run's stale
+  S3 objects. Each Spark write gets a new UUID part-filename, so a re-run's local
+  `mode("overwrite")` correctly replaced the LOCAL dir but silently left the OLD S3 object sitting
+  next to the new one. Caught live: an old 20K-row test partition sat alongside the new
+  6.36M-row one in the same `dt=` partition until fixed (`_delete_prefix` now clears the S3
+  prefix before upload).
+- `seed/mssql/load_paysim.py`'s whole-file path held the full 6.36M-row frame plus full-size
+  derived columns (a 6.36M-element uuid list, a 6.36M-element datetime series) in memory
+  simultaneously for the unsampled/full-scale case — died silently (SIGTERM, zero DB rows
+  written) every time, consistently around ~60-70s, well short of any stated timeout — consistent
+  with memory pressure, not a slow query (the `--sample` path never hit this since it downsamples
+  BEFORE the expensive transforms, tested clean up to 2M rows). Fixed: chunked
+  read/transform/load (500K-row chunks) + `fast_executemany=True` (default pyodbc executemany
+  couldn't finish 6.36M rows in a workable window at all — separate problem, also fixed).
+
+**4. Real run, owner-triggered ("ok run"), independently boto3-verified — not trusted from job
+logs.** `databricks.yml`: `git_branch` default `feat/salesforce-crm-swap` → `main` (already
+merged); added a `silver_fraud` task (disclosed to the owner before deploying, per this project's
+own DAB-Job-expansion rule) — `promotion_gate_salesforce` needed no change, it already loops over
+all 5 sources' tables generically. Databricks CLI installed fresh in this Codespace (wasn't
+present); `bundle validate` → `deploy` → `run` matched the proven CI sequence exactly. Job
+`836817809593837`: all 3 tasks (`promotion_gate_salesforce`, `silver_crm`, `silver_fraud`)
+`SUCCESS`; promotion log correctly shows "1 partition(s) promoted, 0 quarantined" (only the new
+PaySim partition — the already-promoted Salesforce ones were correctly left alone).
+
+Verified independently via `boto3` (not the job log): Landing
+`banking/landing/mssql/paysim_transactions/dt=2026-07-17/` (1 part file, 498,445,374 bytes,
+manifest `row_count=6362620`) → Bronze `banking/bronze/mssql/paysim_transactions/` (7 objects,
+498,582,666 bytes, genuine `_delta_log/00000000000000000000.json` first commit) → Silver
+`banking/silver/card_txn/` (9 objects, 450,149,752 bytes, real Delta commit) — note the Silver
+table name is `card_txn`, not `paysim_transactions` (`silver_fraud.py`'s own naming); a first
+guess at the path was wrong and corrected before claiming success, not left unverified. Cluster
+`0715-022729-6j0g8jhn` confirmed `TERMINATED` after the run via a direct `clusters get` check.
+
+All 4 gates + `python3 -m unittest discover tests` (7/7) green. Committed locally to a NEW branch
+`feat/paysim-real-scale-ingest` (commit `f56b635`) — not `feat/salesforce-crm-swap`, which was
+semantically about the Salesforce swap and already merged. **NOT pushed, no PR opened** — owner
+has not yet seen the diff, per this project's "don't self-merge without a real review chance"
+rule.
+
+**What is NOT done (explicit):** Home Credit (Postgres) — same mechanism now proven twice, but
+needs its own fresh `@finops` go/no-go on the `installments_payments` capping question. Teradata —
+still needs an owner-side ClearScape resume (auto-suspends on idle) and its extractor is still on
+the old local-staging shim (named follow-up since session 7, untouched again this session). A
+`gates/boundary_contract.py`/`framework.yml` doc-sync check `@scope-guardian` flagged (confirm
+governed-sources docs don't still describe PaySim/Home Credit/Teradata at sample-only scale) was
+not run this session.

@@ -84,6 +84,48 @@ def prefix_has_objects(path: str) -> bool:
     return Path(path).exists()
 
 
+def _delete_prefix(dest_path: str) -> None:
+    """Deletes every object under an S3 prefix — used by `upload_dir` to mirror Spark's
+    `mode("overwrite")` semantics. Without this, a re-run's new part-file (a fresh UUID
+    filename each write) would land ALONGSIDE, not replace, a prior run's part-file: the local
+    `mode("overwrite")` write correctly replaces the LOCAL staging dir, but `upload_dir` only
+    ever pushes what's currently local — it never removes what a previous run left in S3. Real
+    bug, caught live (2026-07-17): a re-run of the PaySim extractor left a stale 20K-row test
+    part-file sitting next to the new 6.36M-row one in the same `dt=` partition."""
+    bucket, key_prefix = _split(dest_path)
+    prefix = key_prefix.rstrip("/") + "/"
+    client = boto3.client("s3")
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+        if keys:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+
+
+def upload_dir(local_dir: str, dest_path: str) -> None:
+    """Uploads every file under `local_dir` (recursively) to `dest_path` in S3, preserving
+    relative layout — the JDBC batch extractors' S3 write path (2026-07-17, staff-DE ruling):
+    Spark writes its native parquet/manifest output to a LOCAL temp dir first (no S3A needed,
+    Spark spills to disk instead of collecting to the driver), then this function pushes the
+    bytes up via boto3, same mechanism `write_bytes`/`write_text` already use. No-op (local-disk
+    fallback) when `dest_path` isn't `s3://` — the caller's local temp dir IS the final location.
+    Clears any pre-existing objects at `dest_path` first (see `_delete_prefix`) so a re-run
+    truly overwrites the partition instead of accumulating stale files alongside it.
+    """
+    if not is_s3(dest_path):
+        return
+    _delete_prefix(dest_path)
+    local_root = Path(local_dir)
+    for f in local_root.rglob("*"):
+        # Skip Hadoop LocalFileSystem's `.crc` sidecar files (e.g. `.part-....parquet.crc`) —
+        # an artifact of writing through the local filesystem at all; a native S3A write
+        # (Databricks) never produces these, so uploading them would be staging-path clutter,
+        # not real payload.
+        if f.is_file() and not f.name.endswith(".crc"):
+            rel = f.relative_to(local_root).as_posix()
+            write_bytes(f"{dest_path}/{rel}", f.read_bytes())
+
+
 def list_dt_partitions(landing_path: str) -> list[str]:
     """`dt=...` partition directory names directly under `landing_path` — S3 "directories"
     are just common key prefixes, so this lists them via `Delimiter="/"`."""

@@ -27,10 +27,10 @@ variables:
     default: 0715-022729-6j0g8jhn
   git_branch:
     description: >-
-      Branch Databricks checks out for the git_source Job. Defaults to the branch that carries
-      the proven S3-write fixes + the SystemExit(0) entrypoint guards (ADR-002 Add #6); change to
-      `main` once that branch is merged.
-    default: feat/salesforce-crm-swap
+      Branch Databricks checks out for the git_source Job. Defaults to `main`, which carries the
+      proven S3-write fixes + the SystemExit(0) entrypoint guards (ADR-002 Add #6) since
+      `feat/salesforce-crm-swap` merged (PR #1, 2026-07-17).
+    default: main
 
 resources:
   jobs:
@@ -54,11 +54,25 @@ resources:
           spark_python_task:
             python_file: pipeline/silver/silver_crm.py
             source: GIT
+        - task_key: silver_fraud
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: promotion_gate_salesforce
+          spark_python_task:
+            python_file: pipeline/silver/silver_fraud.py
+            source: GIT
 
-# This bundle codifies the PROVEN 2-stage Berka-via-Salesforce run only. Growing it to the full
-# 27-stage canonical run is a separate decision that must clear @finops (metered cluster cost)
-# and @scope-guardian (canonical-ingest scope) first — do not silently expand the task list here
-# (ADR-008 §routing).
+# 2026-07-17: added silver_fraud (PaySim/MSSQL, full 6.36M-row real-scale ingest) — cleared by
+# @finops (~$15/2hr ceiling, same as the Berka proof) and @scope-guardian (already-locked ADR-006
+# scope, no new mart/BQ) same session, owner said "run". promotion_gate_salesforce needs no
+# change — it already loops over all 5 sources' tables generically (pipeline/promote/
+# promotion_gate.py SOURCE_TABLES), so it picks up mssql.paysim_transactions automatically once
+# real Landing data exists there.
+#
+# This bundle codifies the PROVEN Berka-via-Salesforce + PaySim run. Growing it to the full
+# 27-stage canonical run (or adding Home Credit/Teradata) is a separate decision that must clear
+# @finops (metered cluster cost) and @scope-guardian (canonical-ingest scope) first — do not
+# silently expand the task list here (ADR-008 §routing).
 
 targets:
   dev:
