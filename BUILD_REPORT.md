@@ -1250,3 +1250,104 @@ PaySim, Teradata, Home Credit, and OBP — independently `boto3`-verified for ev
 trusted from any job log alone. OBP's ceiling is Silver (by design); the 4 un-Silver'd Home
 Credit tables and Gold-layer expansion for the other sources remain the named next-session items
 from §21/§22, unchanged by this section.
+
+## 24. Gold layer wired + proven end-to-end for all sources — 8 real bugs found and fixed live, PRs #4-#8 (2026-07-17, ninth session)
+
+Continuation of session 8's "all 5 sources have real Bronze+Silver" state. Task: wire the
+already-written `pipeline/gold/*.py` (dims/facts/9 marts, written in an earlier session against
+the locked ADR-005 star schema, never run against real data) into the DAB Job and prove it
+against real S3 Silver for PaySim/Teradata/Home Credit.
+
+**PR #4 (merged first, was the actual state of `main` at session start — see PROJECT_STATUS.md's
+own prior entry for detail): OBP S3 fix + `promotion_gate.py`'s local-staging-only read bug.**
+Confirmed via `git merge-base --is-ancestor`, not GitHub's PR status alone (a prior session's own
+stated lesson) — `main` really was still broken for OBP/Teradata-CDC promotion until this merge.
+
+**Gold DAB Job expansion, properly gated.** Convened `@staff-data-engineer` (model/schema — code
+already matched the locked ADR-005 grain table, no drift, no stub/TODO found; one blocking
+condition: `pipeline/gold/dim_customer.py`'s docstring still claimed OBP was a survivorship tier,
+contradicting settled ADR-005 Addendum #2 — fixed), `@scope-guardian` (all 9 marts map 1:1 to
+BQ-01..10, OBP correctly absent from every Gold `depends_on`), `@finops` (Gold reads only
+already-materialized Silver Delta, no re-extraction cost; added a 90min job `timeout_seconds`
+backstop since this repo has no documented cluster $/hr rate). Added 17 tasks to `databricks.yml`
+mirroring `pipeline/orchestrate_config.yml`'s Gold section exactly. Verified via boto3 before
+deploying that Gold S3 was empty except `dim_fx_rate` (from an earlier session's proof) — the
+idempotency condition `@staff-data-engineer` flagged (`fact_txn`/`fact_card_fraud`/
+`mart_pipeline_health` all use `mode("append")`) was clear for a first run.
+
+**The chain of real bugs, each found only by actually running the job (none were catchable by
+`py_compile`/unit tests/gates — all stayed green throughout every failure):**
+
+1. **PR #5 — `dim_fx_rate.py`/`dim_customer_xwalk.py` FileNotFoundError.** Both opened their seed
+   CSV via a bare `"seed/artifacts/..."` relative path, assuming CWD == repo root. True for local
+   dev-loop, not for how a `git_source` Databricks task actually executes. First attempted fix
+   (`Path(__file__).resolve().parents[2]`) was itself wrong.
+2. **PR #6 — the PR #5 fix crashed differently: `NameError: name '__file__' is not defined`.**
+   Databricks executes a `git_source` `spark_python_task` via `exec(compile(source, filename,
+   'exec'))` in a scope that never injects `__file__` — a genuine Databricks execution-model
+   quirk, not discoverable without a live run. New fix: `pipeline/common/repo_paths.py::
+   find_seed_artifact()` searches upward from `os.getcwd()` for a `seed/artifacts/<file>` match
+   (confirmed via a diagnostic print this fix added: cwd on the cluster is the script's own
+   directory, `.../pipeline/gold`), with a graceful fallback + diagnostic print if wrong again.
+3. **PR #7 — `dim_customer_xwalk.csv` (11.8MB, 345,857 rows) was never actually pushed to
+   GitHub.** `.gitignore`'s blanket `*.csv` rule only ever allowlisted `fx_rates.csv` — the exact
+   same gap the project owner had already found and fixed for `fx_rates.csv` one day earlier
+   (commit `7a07d45`). Applied the identical precedent: allowlist + commit.
+4. **PR #8 — `fact_card_fraud.py`/`mart_risk_segment.py` crashed on real boolean-vs-underlying-
+   type mismatches.** `journey/05_STTM.md` already declares `is_fraud`/`is_flagged_fraud`
+   (MSSQL PaySim) and `credit_in_default`/`subscribed_term_deposit` (Teradata) as `boolean`, but
+   `silver_fraud.py`/`silver_marketing.py` only ever renamed the columns, never cast them — MSSQL
+   JDBC landed `is_fraud` as BIGINT (`DATATYPE_MISMATCH` under ANSI mode on `== True`); Teradata's
+   UCI-native `"yes"`/`"no"` strings threw `CAST_INVALID_INPUT` on `.cast("int")`.
+   `mart_customer_360.py` hit the identical broken data but did NOT crash — silently produced
+   wrong `has_term_deposit` values instead (a STRING never truly equals a boolean literal), only
+   caught because this fix touched the same column. Fixed at the source (Silver casts), not by
+   loosening the Gold-layer comparisons, since the Gold code was already correct against the
+   locked STTM contract. `fact_txn.py`'s Berka-side `is_fraud` placeholder
+   (`lit(0).cast("long")`) also had to change to `lit(False)` to keep `unionByName` compatible.
+5. **Not a PR — a real Delta Lake behavior, not a code bug: MERGE/append-overwrite don't retype
+   an existing column.** After PR #8 merged and `silver_fraud`/`silver_marketing` genuinely
+   re-ran with the fix (confirmed via `used_commit` in the task's `git_source` detail),
+   `fact_card_fraud`/`fact_txn` STILL saw BIGINT/STRING — because `merge_upsert()`'s `MERGE INTO`
+   enforces the pre-existing target Delta table's stored schema, silently casting new boolean
+   values back down rather than evolving the column type. **Locally reproduced this exact failure
+   for free** (`DELTA_FAILED_TO_MERGE_FIELDS`) using local Spark 3.5.3 + delta-spark — required
+   discovering this Codespace's default Java (25) is incompatible with Spark and switching to
+   `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` — then verified the fix (delete + fresh-create)
+   resolves it, before spending any more cluster time. Deleted `silver/card_txn` and
+   `silver/campaign_response` from S3 so the next run hit `merge_upsert`'s fresh-create branch.
+6. **Same root cause, one layer up: `gold/fact_txn` (written by an earlier partially-successful
+   attempt with BIGINT `is_fraud`) and `gold/mart_cross_sell` (written with STRING
+   `subscribed_term_deposit`) were themselves poisoned by the SAME mechanism** —
+   `mode("append")`/`mode("overwrite")` both still enforce a pre-existing Gold table's schema.
+   Caught by a full `boto3`-driven audit of every Gold table's `_delta_log` (not by guessing which
+   table might be affected) — found exactly these 2 of 16, deleted both, re-ran only the affected
+   tasks.
+
+**Final state, independently verified via `boto3` against every Gold table's own `_delta_log`
+(commit count, data-file count, and actual stored type of every boolean-sensitive column) — not
+trusted from the job's own "SUCCESS" status**: all 16 Gold tables (4 dims, 3 facts, 9 marts) have
+real Delta commits and data files in S3; `fact_txn.is_fraud` and
+`mart_cross_sell.subscribed_term_deposit` are genuinely `boolean`. Databricks Job run
+`127330185225331` reached `23/23` task success only after 6 repair-run attempts total (one full
+run + 5 repairs) — cluster confirmed `TERMINATED` after.
+
+**A real process lesson, called out by the owner mid-session and worth keeping**: every fix in
+this chain was verified locally via `py_compile` + `python3 -m unittest discover tests` (7/7,
+unchanged throughout) + all 4 gates — all green on every single one of the 6 failed attempts.
+None of those checks exercise the actual Databricks execution model, real Silver/Gold data
+shapes, or Delta's schema-enforcement behavior, so "all green" was never evidence the fix would
+actually work on the cluster. The `fact_txn`/`mart_cross_sell` schema-poisoning bugs (#5, #6
+above) were only found by a systematic `boto3` audit of every table's stored schema, not by
+re-running and reacting to whichever error surfaced next — and were only fixed for free (no
+cluster cost) by reproducing the exact Delta error locally first (`JAVA_HOME` override needed,
+since this Codespace's default Java 25 can't run Spark 3.5.3's local gateway). Local-first,
+enumerate-the-full-blast-radius-before-acting should be the default approach for any future
+schema-shaped bug in this pipeline, not react-to-the-next-error-and-rerun.
+
+Governance: PRs #5, #6, #7, #8 each opened for review before merging (never pushed straight to
+`main`), each independently verified on `main` via `git merge-base --is-ancestor` after merge
+(not trusted from GitHub's PR-merged status alone). `@staff-data-engineer`/`@scope-guardian`/
+`@finops` sign-off obtained before the initial DAB Job expansion; no further committee consult
+needed for the bug-fix chain since none changed grain/schema/scope — each corrected code to match
+an already-locked contract (ADR-005, STTM) or fixed a real execution-environment gap.

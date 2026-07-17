@@ -2,6 +2,53 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-17 (ninth session) — ✅ GOLD LAYER WIRED + PROVEN END-TO-END, ALL 16 GOLD TABLES REAL
+IN S3, independently `boto3`-verified. Merged PR #4 (OBP fix, was still unmerged at session
+start — confirmed via `git merge-base`, not GitHub's PR status), then wired 17 Gold tasks into
+`databricks.yml` (cleared `@staff-data-engineer`/`@scope-guardian`/`@finops` first). The live run
+surfaced 6 real, previously-latent bugs — none catchable by `py_compile`/unit tests/gates, all of
+which stayed green through every single failure. Full technical detail: BUILD_REPORT.md §24.**
+
+- **PR #5/#6**: seed-artifact CSV loading (`dim_fx_rate.py`/`dim_customer_xwalk.py`) assumed
+  CWD == repo root; Databricks' `git_source` task execution doesn't even define `__file__`
+  (`exec(compile(...))`, not a normal script run) — a genuine execution-model quirk only
+  discoverable by actually running it. Fixed via `pipeline/common/repo_paths.py::
+  find_seed_artifact()`, searching upward from `os.getcwd()`.
+- **PR #7**: `dim_customer_xwalk.csv` (11.8MB) was never pushed to GitHub — `.gitignore`'s
+  blanket `*.csv` rule only ever allowlisted `fx_rates.csv`. Same gap the owner had already fixed
+  for `fx_rates.csv` one day earlier; applied the identical precedent.
+- **PR #8**: `is_fraud`/`is_flagged_fraud`/`credit_in_default`/`subscribed_term_deposit` were
+  never actually cast to the `boolean` type `journey/05_STTM.md` already locks for them —
+  crashed `fact_card_fraud`/`mart_risk_segment`, and silently corrupted `mart_customer_360`'s
+  `has_term_deposit` (no crash, just wrong data). Fixed at the Silver source, not by loosening
+  the Gold-layer comparisons (which were already correct against the STTM).
+- **No PR — a real Delta Lake behavior, not a code bug**: `MERGE INTO`/`mode("overwrite")` both
+  enforce a pre-existing Delta table's *stored* schema — a code fix that changes a column's type
+  doesn't take effect against an already-existing table. Silver (`card_txn`,
+  `campaign_response`) AND two Gold tables written by earlier partial attempts
+  (`fact_txn`, `mart_cross_sell`) were all "poisoned" with stale types this way. Found the full
+  blast radius via a systematic `boto3` audit of every table's `_delta_log` (not by guessing),
+  and verified the delete-and-recreate fix **for free** by reproducing the exact
+  `DELTA_FAILED_TO_MERGE_FIELDS` error with local Spark before spending more cluster time —
+  needed `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` since this Codespace's default Java 25
+  can't run Spark 3.5.3's local gateway (a reusable finding for any future local-Spark work here).
+- **Process lesson worth keeping** (owner called this out mid-session): don't react to whichever
+  error the cluster surfaces next and re-run blindly — enumerate the full blast radius (audit
+  every affected table, not just the one that errored) and reproduce locally/for free before
+  spending more cluster time. The first ~4 fixes in this chain were each individually correct but
+  found reactively, one cloud run at a time; the schema-poisoning bugs were only fully resolved
+  once the approach switched to audit-everything-then-fix-once.
+- Databricks Job run `127330185225331`: 6 attempts total (1 full run + 5 repairs) before
+  `23/23 SUCCESS`. Cluster `0715-022729-6j0g8jhn` confirmed `TERMINATED` after.
+
+**Next session**: OBP stays Silver-terminal (settled, ADR-005 Add #2, do not re-litigate). The 4
+un-Silver'd Home Credit tables remain locked-scope-as-is. Gold is now fully proven for all 4
+seedable sources (Berka/Salesforce, PaySim, Teradata, Home Credit) — remaining candidate work is
+journey/08 evidence queries against the now-real Gold marts (BQ-01..10), or Fasa E serving
+(Snowflake external tables / DuckDB) if the owner wants to move forward there.
+
+---
+
 **2026-07-17 (eighth session, second continuation) — ✅ OBP SCALED TO REAL S3 TOO — ALL 5 SOURCES
 NOW HAVE REAL LANDING→BRONZE→SILVER IN S3, independently verified. Also found and fixed a
 deeper latent bug while wiring OBP up: `promotion_gate.py` itself (shared, core pipeline code —
