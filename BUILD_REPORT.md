@@ -1175,3 +1175,78 @@ twice this session via two completely different mechanisms — psycopg2/COPY and
 still not fully understood, only empirically worked around each time via periodic flushed output
 and bounded chunk sizes — worth treating as a standing operational note for this Codespace, not
 assuming it's fully solved.
+
+## 23. OBP scaled to real S3; a deeper latent bug in promotion_gate.py itself found and fixed (2026-07-17, eighth session, second continuation)
+
+Same session as §21/§22, continuing after the owner said "keep going" without waiting for PR #3
+(Teradata+Home Credit) to merge first. Committed this work to the same open branch rather than
+opening a 4th PR, keeping "scale all 5 sources to real S3" as one reviewable unit.
+
+**`obp_client.py` had the identical gap Teradata's extractor had before §22's fix**: `_land()`
+wrote Landing payloads to `/tmp/s3_staging/` and never pushed anything to S3, regardless of AWS
+creds. Fixed with the same `s3_io.upload_dir()` pattern already proven three times this session.
+
+**Tracing through why fixing the extractor alone wouldn't be sufficient surfaced a real,
+previously-latent bug in `promotion_gate.py` itself** — shared, core pipeline code, not a
+per-source extractor. Two branches inside `promote_partition()` hardcoded
+`partition_path.replace("s3://", "/tmp/s3_staging/")`: the `'cdc'` mode branch (Teradata) and
+the OBP-specific `response.json` branch of `'batch'` mode. This was invisible until now because
+neither `cdc_common.py` nor `obp_client.py` had ever actually uploaded anything to S3 — so
+`_landing_partitions()` never enumerated any partitions for those sources once AWS creds were
+present, and these two branches were simply never exercised end-to-end. The moment both
+extractors' Landing-write side got fixed (Teradata in §22, OBP here), this would have become a
+real, silent failure: Bronze promotion always runs on the Databricks cluster (Delta writes need
+S3A, which local Spark doesn't have), and the Databricks cluster has zero access to this
+Codespace's local `/tmp` directory. Fixed all three spots to read directly from the real `s3://`
+path via Spark's native reader (S3A) — the same thing the pre-existing parquet branch already
+did correctly — removing the local-staging assumption from promotion entirely:
+1. `'cdc'` branch: `spark.read.json(f"{partition_path}/events.json")` instead of a local-path
+   read.
+2. OBP `response.json` branch: same fix, `spark.read.json(f"{partition_path}/response.json")`.
+3. `_promote_cdc`'s Bronze-existence check: `s3_io.prefix_has_objects(bronze_path)` instead of
+   `Path(bronze_path.replace(...)).exists()`.
+
+Removed the now-unused `from pathlib import Path` import. Note this fix was ALSO latent for
+Teradata's ongoing CDC-poll path specifically — not exercised in §22's proof since
+`bank_marketing_cdc_log` is genuinely empty (no changes simulated yet) — so §22's Teradata proof
+only exercised the R-40 initial-snapshot (`'batch'` mode, parquet shape, always-correct branch).
+This fix makes the CDC branch correct for whenever real CDC events start flowing, not just
+theoretically documented as pending.
+
+**`databricks.yml`**: added `silver_core_banking` — OBP's actual Silver domain pipeline
+(`build_sil_obp_accounts`/`build_sil_obp_transactions`, table names `obp_accounts`/
+`obp_transactions`) — confirmed by reading the code, correcting an earlier wrong guess THIS SAME
+session (§22 initially mis-attributed this module to Home Credit before checking). Per ADR-005
+Addendum #2, OBP is Silver-terminal by design (an already-settled decision, unrelated to this
+session) — no Gold task added for it.
+
+**Real run proof, owner-triggered ("keep going"), independently `boto3`-verified.** Confirmed
+OBP sandbox connectivity live before running (`/obp/v4.0.0/banks` → 199 banks, not assumed from
+a prior session's note). Landed 20 accounts + 183 transactions from the live public sandbox,
+both clean (3 objects each: `response.json` + manifest + `_SUCCESS`). **Deployed and ran against
+the `feat/teradata-homecredit-real-scale-ingest` branch specifically** via `databricks bundle
+run --var="git_branch=..."`, not `main` — this run genuinely needed the not-yet-merged
+`promotion_gate.py`/`obp_client.py` fixes, and this project doesn't push straight to `main`
+without review. Databricks Job run `155395156671723`: all 6 tasks SUCCESS (the prior 5 plus the
+new `silver_core_banking`). `promotion_gate` log: "2 partition(s) promoted, 0 quarantined" —
+exactly the 2 new OBP partitions, nothing else re-promoted. Verified independently via `boto3`:
+genuine `_delta_log` Delta commits at `bronze/obp/accounts`, `bronze/obp/transactions`,
+`silver/obp_accounts`, `silver/obp_transactions`. Cluster `0715-022729-6j0g8jhn` confirmed
+`TERMINATED` after the run via a direct `clusters get` check.
+
+All 4 gates + `python3 -m unittest discover tests` (7/7) green.
+
+**One real operational hiccup, caught and fixed inline, worth naming**: a background poll for
+this run's status was started without first sourcing `.env` — no `DATABRICKS_HOST`/
+`DATABRICKS_TOKEN` in that shell, so every `databricks jobs get-run` call inside the poll loop
+silently failed (stderr was redirected to `/dev/null` as part of the polling pattern), leaving
+`$state` permanently empty and the loop spinning uselessly toward its own timeout. Caught by
+checking for `~/.databrickscfg` (confirmed absent — this CLI install relies purely on env vars,
+no cached config) rather than trusting the "completed" notification the broken loop eventually
+sent; started a second, correctly-authenticated poll and disregarded the first.
+
+**What is now true across all 5 sources**: Landing→Bronze→Silver in real S3 for Salesforce/Berka,
+PaySim, Teradata, Home Credit, and OBP — independently `boto3`-verified for every one, not
+trusted from any job log alone. OBP's ceiling is Silver (by design); the 4 un-Silver'd Home
+Credit tables and Gold-layer expansion for the other sources remain the named next-session items
+from §21/§22, unchanged by this section.

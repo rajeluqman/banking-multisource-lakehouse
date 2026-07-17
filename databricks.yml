@@ -75,6 +75,13 @@ resources:
           spark_python_task:
             python_file: pipeline/silver/silver_sales.py
             source: GIT
+        - task_key: silver_core_banking
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: promotion_gate_salesforce
+          spark_python_task:
+            python_file: pipeline/silver/silver_core_banking.py
+            source: GIT
 
 # 2026-07-17: added silver_fraud (PaySim/MSSQL) same session as the first entry below;
 # silver_marketing (Teradata/bank_marketing) + silver_sales (Home Credit/Postgres — only
@@ -90,6 +97,11 @@ resources:
 # sources' tables generically (pipeline/promote/promotion_gate.py SOURCE_TABLES), so it picks up
 # mssql.paysim_transactions / teradata.bank_marketing / postgres.* automatically once real
 # Landing data exists there.
+#
+# silver_core_banking (OBP — accounts/transactions) added same session, after fixing obp_client.py
+# and promotion_gate.py's OBP/cdc branches to actually read/write real S3 instead of a hardcoded
+# local-staging path that would have been invisible to the Databricks cluster (2026-07-17). Per
+# ADR-005 Add #2, OBP is Silver-terminal by design — no Gold task for it, not an oversight.
 #
 # This bundle now codifies all 5 sources' proven Landing->Bronze->Silver run. Growing it to the
 # full 27-stage canonical run (Gold layer) is a separate decision that must clear @finops
