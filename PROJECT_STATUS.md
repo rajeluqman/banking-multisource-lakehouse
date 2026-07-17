@@ -2,6 +2,109 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-17 (eighth session, continuation) — ✅ TERADATA + HOME CREDIT (POSTGRES) ALSO SCALED TO
+REAL S3, same session as the PaySim proof below — all 5 sources now have real Landing data in
+S3, 4 of 5 (all but OBP) have real Bronze+Silver. Owner asked to parallelize Teradata + Home
+Credit "local prep" (both $0, Codespace-only) after merging the PaySim PR. Not yet committed —
+working tree has 6 modified files, about to commit to a new branch.** Summary:
+
+- **Fresh row-count-based `@finops` re-ruling on Home Credit, catching a real gap in the first
+  pass**: the original ruling capped only `installments_payments` (13.6M rows) based on CSV file
+  size (690MB, the largest file). Actual row counts (`wc -l`, ground truth) showed
+  `bureau_balance` at **27.3M rows** (2x installments_payments, despite a smaller 359MB file —
+  narrow 3-column table) and `POS_CASH_balance` at 10.0M rows — both bigger risks than the one
+  table originally flagged, both would have run "full scale" under the stale ruling. Re-ruled:
+  cap all 3 (`bureau_balance`/`installments_payments`/`POS_CASH_balance`) at 2M rows each; other
+  4 tables (`application` 307K, `bureau` 1.7M, `previous_application` 1.67M, `credit_card_balance`
+  3.84M) run full. Ceiling revised $15-20/2-2.5hr → $20-25/2.5-3hr.
+- **Teradata**: `pipeline/extract/cdc_common.py`/`cdc_initial_snapshot.py` were still on the
+  ORIGINAL local-staging shim (named follow-up since session 7) — `_write_events`/
+  `_write_snapshot` wrote to `/tmp/s3_staging/` and never uploaded to S3 at all, regardless of
+  AWS creds. Fixed (mirrors the `jdbc_batch_common.py`/`s3_io.upload_dir()` pattern). Landed the
+  R-40 initial-snapshot bulk load (45,211 rows, full UCI Bank Marketing dataset, already resumed
+  live in Teradata by the owner — verified via `SELECT 1`, not assumed) by rebuilding the exact
+  deterministic `df` the seed script originally built (`seed/teradata/load_bank_marketing.py`'s
+  `build()`, same-day `SEED_DAY` + fixed `seeded_random` seed = reproducible) rather than
+  re-running the seed script itself (which would `DROP TABLE`+recreate already-good live state).
+  CDC poll correctly reports "no new events" (accurate — `_cdc_log` is genuinely empty, no
+  changes simulated; not fabricated activity). Discovered `silver_marketing.py`'s R-40 UNION gap
+  (named in session 7 as NOT YET wired) was actually already fixed in a later session — the
+  stale module docstring in `cdc_initial_snapshot.py` just wasn't updated; live-confirmed the
+  current code correctly UNIONs `bronze/teradata/bank_marketing` (baseline) with
+  `bank_marketing_cdc` (overlay).
+- **Home Credit seed loader (`seed/postgres/load_home_credit.py`) needed 2 real fixes, found
+  live**: (1) only a single global `--sample` existed (no per-table caps) — added
+  `LARGE_TABLE_CAPS` dict, applied automatically on a full/canonical run. (2) Default pandas
+  `to_sql`/psycopg2 `executemany` was far too slow (same class of bug as PaySim's pyodbc issue)
+  — added a COPY-based `method` (pandas' own documented recipe, `psycopg2.extras`-style
+  `copy_expert`). **A third, harder-to-diagnose issue surfaced**: a single `to_sql` call moving
+  a wide table (`previous_application`, 1.67M rows x 37 columns) died consistently and silently
+  (SIGTERM, zero DB progress) around 1M-1.67M rows, while `bureau_balance` (2M rows x 3 narrow
+  columns) succeeded fine in one shot in an earlier attempt — pointed at total serialized byte
+  volume in this sandboxed environment, not row count (bisected: 600K/1M rows of the same wide
+  table succeeded, the full 1.67M consistently didn't). Fixed by slicing the INSERT (not the CSV
+  read, which was never the problem) into bounded ~800K-row pieces
+  (`INSERT_SLICE_SIZE`) — root cause not fully explained, but the fix is robust regardless.
+- **`pipeline/common/spark_session.py` + `pipeline/extract/jdbc_batch_common.py` needed 2 more
+  real fixes for Postgres/Home Credit at this scale** (neither hit by PaySim/MSSQL, both live-
+  caught, not hypothetical): (1) local Spark's default driver heap (~1g) hit a genuine
+  `OutOfMemoryError: Java heap space` writing `bureau` (1.7M rows) to local parquet staging,
+  right after the smaller `application` table succeeded — added `spark.driver.memory=3g` to the
+  local-mode branch only (Databricks manages its own cluster memory). (2) Postgres' JDBC driver
+  buffers the ENTIRE result set client-side without an explicit `fetchsize` (a well-documented
+  JDBC trap) — crashed the JVM on `previous_application` (1.67M rows x 37 columns) even after
+  the memory fix, despite `bureau`'s similar row count (far fewer columns) working fine; added
+  `.option("fetchsize", 10_000)` to the shared JDBC read, benefiting all Postgres/MSSQL
+  extraction, not just this table.
+- **All 7 Home Credit tables + Teradata's initial snapshot landed to real S3, independently
+  boto3-verified** (not trusted from output): `banking/landing/postgres/{application,bureau,
+  bureau_balance,previous_application,pos_cash_balance,credit_card_balance,
+  installments_payments}/dt=2026-07-17/` — row counts in each manifest exactly match the
+  Postgres source counts (307,511 / 1,716,428 / 2,000,000 / 1,670,214 / 2,000,000 / 3,840,312 /
+  2,000,000); `banking/landing/teradata/bank_marketing/dt=2026-07-17/` — 45,211 rows. Total
+  ~13.5M Home Credit rows + 45,211 Teradata rows, all clean (3 objects each, no stray files —
+  the `upload_dir()` overwrite fix from the PaySim proof already prevents that class of bug).
+- **`databricks.yml`**: added `silver_marketing` (Teradata) and `silver_sales` (Home Credit)
+  tasks, both depending on `promotion_gate_salesforce` (needed no change — already generic
+  across all 5 sources' `SOURCE_TABLES`). **Note**: only `application`/`bureau`/
+  `previous_application` are wired into Silver via `silver_sales` — the other 4 Home Credit
+  tables (`bureau_balance`/`POS_CASH_balance`/`credit_card_balance`/`installments_payments`)
+  land in Bronze verbatim (ADR-003 D-05) but have NO Silver transform written for them; this is
+  PRE-EXISTING locked scope (not touched this session, not a gap introduced by this work) — the
+  10 BQs don't need them at Silver/Gold. (Also caught and fixed a wrong first guess:
+  `silver_core_banking.py` is OBP's domain, not Home Credit's — checked the actual code before
+  wiring the task, not assumed from the name.)
+- **Real run, owner-triggered, independently boto3-verified**: Databricks Job run
+  `157028493204578`, all 5 tasks (`promotion_gate_salesforce`, `silver_crm`, `silver_fraud`,
+  `silver_marketing`, `silver_sales`) `SUCCESS`. `promotion_gate`: "8 partition(s) promoted, 0
+  quarantined" (7 Home Credit + 1 Teradata — Salesforce/PaySim correctly already-promoted,
+  skipped). `silver_sales` log: "251103 bureau rows quarantined as orphan FKs (R-03)" — a real,
+  expected characteristic of the actual Kaggle dataset (bureau covers more clients than
+  application), correctly caught by the pre-existing DQ gate, not a bug. Verified independently
+  via boto3: real `_delta_log` commits at Bronze for all 7 Postgres tables + Teradata, and at
+  Silver for `application`/`bureau`/`previous_application` (Home Credit) + `campaign_response`
+  (Teradata). Cluster `0715-022729-6j0g8jhn` confirmed `TERMINATED` after the run.
+- All 4 gates + `python3 -m unittest discover tests` (7/7) green.
+
+**Next session**: (1) commit this session's 6 modified files (`databricks.yml`,
+`pipeline/common/spark_session.py`, `pipeline/extract/cdc_common.py`,
+`pipeline/extract/cdc_initial_snapshot.py`, `pipeline/extract/jdbc_batch_common.py`,
+`seed/postgres/load_home_credit.py`) to a new branch, push, open a PR — not yet done as of this
+checkpoint; (2) OBP — still on the original local-staging shim (same gap Teradata had), tiny
+dataset (20 accounts, 183 txns) so no `@finops` scale concern, just needs the same shim-migration
+fix; per ADR-005 Add #2 OBP is Silver-terminal by design (no Gold wiring, not a gap); (3) the 4
+un-Silver'd Home Credit tables (`bureau_balance` etc.) are locked-scope-as-is, don't silently
+build Silver transforms for them without a fresh `@staff-data-engineer` STOP-GATE consult; (4)
+Gold layer to real S3 for PaySim/Teradata/Home Credit — same git-sourced Job pattern, but
+expanding the DAB Job past Bronze/Silver needs `@finops`+`@scope-guardian` sign-off first
+(ADR-008); (5) the sandboxed-environment "total data volume kills a long silent operation"
+pattern hit twice this session (once via psycopg2/COPY, once via Spark JDBC) — root cause still
+not fully understood, just empirically worked around each time (periodic flushed output +
+chunking/slicing); worth naming as a standing operational note for future large-table work in
+this Codespace, not just this session's tables.
+
+---
+
 **2026-07-17 (eighth session) — ✅ PAYSIM (MSSQL) SCALED TO REAL S3 AT FULL 6.36M-ROW KAGGLE
 SCALE, end-to-end Landing→Bronze→Silver, independently boto3-verified. Branch
 `feat/paysim-real-scale-ingest` (commit `f56b635`), NOT pushed/PR'd yet — local commit only,

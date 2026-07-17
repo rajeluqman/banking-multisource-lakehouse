@@ -21,6 +21,13 @@ def get_spark(app_name: str) -> SparkSession:
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
     )
+    if not use_unity_catalog():
+        # Local/dev-loop Spark's default driver heap (~1g) is too small for real-scale JDBC
+        # extraction — live-caught (2026-07-17): a genuine OutOfMemoryError writing Home
+        # Credit's `bureau` table (1.7M rows) to local parquet staging, right after the smaller
+        # `application` table (307K rows) succeeded fine. Databricks manages its own cluster
+        # memory, so this override only applies to the local-mode branch below.
+        builder = builder.config("spark.driver.memory", "3g")
     if use_unity_catalog():
         # Databricks runtime bundles the Delta JVM jars already — nothing more to configure.
         return builder.getOrCreate()

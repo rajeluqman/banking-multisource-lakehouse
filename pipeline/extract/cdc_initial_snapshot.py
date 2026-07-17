@@ -38,6 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
 from pipeline.common.watermark import read_watermark, write_watermark
 
@@ -74,3 +75,8 @@ def _write_snapshot(partition_path: str, source: str, table: str, df: pd.DataFra
     manifest["checksum"] = hashlib.sha256(manifest_json.encode()).hexdigest()
     (out_dir / "_manifest.json").write_text(json.dumps(manifest))
     (out_dir / "_SUCCESS").write_text("")
+
+    # Local staging was previously the FINAL location (never pushed to S3 at all) — real AWS
+    # creds should mean real S3, same fix already applied to jdbc_batch_common.py (2026-07-17).
+    if s3_io.is_s3(partition_path):
+        s3_io.upload_dir(str(out_dir), partition_path)
