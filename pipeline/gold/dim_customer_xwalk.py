@@ -10,6 +10,7 @@ Grain: one row per (customer_id, source_system) pair (journey/04_DATA_MODEL.md).
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StringType, StructField, StructType
@@ -23,8 +24,15 @@ XWALK_SCHEMA = StructType([
     StructField("source_priority_rank", StringType()),
 ])
 
+# 2026-07-17: a plain "seed/artifacts/..." relative default assumed CWD == repo root, true for
+# a local dev-loop run but NOT for a git_source Databricks task (real, reproducible failure —
+# job run 127330185225331 — FileNotFoundError the first time this ever ran on the cluster).
+# Anchor to this file's own location instead of CWD.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-def build(spark: SparkSession, xwalk_csv_path: str = "seed/artifacts/dim_customer_xwalk.csv") -> None:
+
+def build(spark: SparkSession, xwalk_csv_path: str | None = None) -> None:
+    xwalk_csv_path = xwalk_csv_path or str(_REPO_ROOT / "seed/artifacts/dim_customer_xwalk.csv")
     with open(xwalk_csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     df = spark.createDataFrame(rows, schema=XWALK_SCHEMA)

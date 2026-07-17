@@ -83,6 +83,167 @@ resources:
             python_file: pipeline/silver/silver_core_banking.py
             source: GIT
 
+        # ---- Silver -> Gold (2026-07-17, ninth session) — cleared @staff-data-engineer
+        # (model/schema: code on disk already matches the locked ADR-005 grain table, no
+        # drift, no stub/TODO found), @scope-guardian (all 9 marts map 1:1 to BQ-01..10, no
+        # OBP anywhere in this graph per ADR-005 Add #2), @finops (Gold reads already-
+        # materialized Silver Delta only, no re-extraction, well under the $15-25 per-source
+        # Bronze/Silver ceilings). depends_on below mirrors pipeline/orchestrate_config.yml's
+        # Gold section EXACTLY (ground truth, not the ADR-007 block-diagram) -- do not
+        # simplify this DAG.
+        - task_key: dim_customer_xwalk
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: pipeline/gold/dim_customer_xwalk.py
+            source: GIT
+        - task_key: dim_date
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: pipeline/gold/dim_date.py
+            source: GIT
+        - task_key: dim_fx_rate
+          existing_cluster_id: ${var.cluster_id}
+          spark_python_task:
+            python_file: pipeline/gold/dim_fx_rate.py
+            source: GIT
+        - task_key: dq_currency_gate
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: silver_sales
+            - task_key: silver_fraud
+            - task_key: silver_crm
+            - task_key: silver_marketing
+            - task_key: silver_core_banking
+          spark_python_task:
+            python_file: pipeline/gold/dq_currency_gate.py
+            source: GIT
+        - task_key: dim_customer
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_crm
+            - task_key: silver_sales
+          spark_python_task:
+            python_file: pipeline/gold/dim_customer.py
+            source: GIT
+        - task_key: fact_txn
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: dim_fx_rate
+            - task_key: dq_currency_gate
+            - task_key: silver_fraud
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/fact_txn.py
+            source: GIT
+        - task_key: fact_card_fraud
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: dim_fx_rate
+            - task_key: dq_currency_gate
+            - task_key: silver_fraud
+          spark_python_task:
+            python_file: pipeline/gold/fact_card_fraud.py
+            source: GIT
+        - task_key: fact_loan_application
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_sales
+          spark_python_task:
+            python_file: pipeline/gold/fact_loan_application.py
+            source: GIT
+        - task_key: mart_customer_360
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer
+            - task_key: fact_txn
+            - task_key: fact_loan_application
+            - task_key: silver_marketing
+          spark_python_task:
+            python_file: pipeline/gold/mart_customer_360.py
+            source: GIT
+        - task_key: mart_cross_sell
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer
+            - task_key: fact_loan_application
+            - task_key: fact_txn
+            - task_key: dim_customer_xwalk
+            - task_key: dim_fx_rate
+            - task_key: silver_marketing
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/mart_cross_sell.py
+            source: GIT
+        - task_key: mart_daily_flows
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: fact_txn
+            - task_key: dim_fx_rate
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/mart_daily_flows.py
+            source: GIT
+        - task_key: mart_dormancy
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer
+            - task_key: fact_txn
+          spark_python_task:
+            python_file: pipeline/gold/mart_dormancy.py
+            source: GIT
+        - task_key: mart_fraud_daily
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: fact_card_fraud
+          spark_python_task:
+            python_file: pipeline/gold/mart_fraud_daily.py
+            source: GIT
+        - task_key: mart_fraud_followup
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: fact_card_fraud
+            - task_key: dim_customer_xwalk
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/mart_fraud_followup.py
+            source: GIT
+        - task_key: mart_loan_funnel
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: silver_sales
+          spark_python_task:
+            python_file: pipeline/gold/mart_loan_funnel.py
+            source: GIT
+        - task_key: mart_risk_segment
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_sales
+            - task_key: silver_marketing
+            - task_key: fact_txn
+          spark_python_task:
+            python_file: pipeline/gold/mart_risk_segment.py
+            source: GIT
+        - task_key: mart_pipeline_health
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: silver_sales
+            - task_key: silver_fraud
+            - task_key: silver_crm
+            - task_key: silver_marketing
+            - task_key: silver_core_banking
+          spark_python_task:
+            python_file: pipeline/gold/mart_pipeline_health.py
+            source: GIT
+
+      # @finops condition (2026-07-17 Gold sign-off): explicit hard backstop given this repo
+      # has no documented cluster $/hour rate to extrapolate a confident dollar figure from.
+      timeout_seconds: 5400  # 90 min
+
 # 2026-07-17: added silver_fraud (PaySim/MSSQL) same session as the first entry below;
 # silver_marketing (Teradata/bank_marketing) + silver_sales (Home Credit/Postgres — only
 # application/bureau/previous_application are wired into Silver; bureau_balance/POS_CASH_balance/
@@ -103,10 +264,17 @@ resources:
 # local-staging path that would have been invisible to the Databricks cluster (2026-07-17). Per
 # ADR-005 Add #2, OBP is Silver-terminal by design — no Gold task for it, not an oversight.
 #
-# This bundle now codifies all 5 sources' proven Landing->Bronze->Silver run. Growing it to the
-# full 27-stage canonical run (Gold layer) is a separate decision that must clear @finops
-# (metered cluster cost) and @scope-guardian (canonical-ingest scope) first — do not silently
-# expand the task list here (ADR-008 §routing).
+# This bundle now codifies all 5 sources' proven Landing->Bronze->Silver run PLUS the full Gold
+# layer (dims/facts/marts, added 2026-07-17, ninth session): 17 new tasks (3 seed-driven dims +
+# dim_customer + dq_currency_gate + 3 facts + 9 BQ-01..10 marts), depends_on graph copied
+# verbatim from pipeline/orchestrate_config.yml's Gold section (ground truth over the ADR-007
+# block-diagram). Cleared @staff-data-engineer (model/schema: code already matches the locked
+# ADR-005 grain table, no drift — see pipeline/gold/dim_customer.py docstring fix same session),
+# @scope-guardian (all 9 marts map 1:1 to BQ-01..10, OBP correctly absent from every Gold
+# depends_on per ADR-005 Add #2), @finops (Gold reads only already-materialized Silver Delta, no
+# re-extraction cost; explicit timeout_seconds backstop added since this repo has no documented
+# cluster $/hour rate). Not a silent expansion — all three signed off this session before this
+# edit landed (ADR-008 §routing).
 
 targets:
   dev:
