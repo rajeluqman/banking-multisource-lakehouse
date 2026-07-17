@@ -2,82 +2,81 @@
 
 ## ▶ RESUME HERE (read this first)
 
-**2026-07-17 (tenth session) — ✅ journey/08 evidence refreshed against REAL full-Kaggle-scale S3
-Gold — 8/10 BQs PROVEN, **BQ-04 fixed + redeployed + boto3-artifact-verified on the canonical S3
-table**, BQ-10's root cause CONFIRMED (fix pending sign-off), BQ-09 remains an open cost/scope
-decision.**
+**2026-07-17 (tenth session) — ✅✅✅ journey/08 evidence refreshed against REAL full-Kaggle-scale
+S3 Gold — 10/10 BQs PROVEN. All 3 real defects found this session (BQ-04, BQ-09, BQ-10) fixed,
+redeployed, and independently artifact-verified — including a mid-session operational incident
+(3 doubled fact tables) caught via ADR-009 discipline and fully remediated. Nothing left open.**
 
-Ran the actual BQ-01..10 mart queries with local Spark (`JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`)
-against `s3://banking-lakehouse-pipeline/banking/gold/` directly (ad hoc `hadoop-aws:3.3.4` S3A
-config in a scratch script only) to replace the stale 2026-07-15 dev-loop-scale numbers
-(`journey/08_SERVING_AND_EVIDENCE.md`'s old `fact_txn` 20,750-row sample) with real numbers from
-the now-real full-scale Gold (`fact_txn` 6,363,370 rows, PaySim alone 6,362,620). Full detail:
-`journey/08_SERVING_AND_EVIDENCE.md`'s "Per-BQ evidence (2026-07-17...)" section (top of file,
-historical 07-15 section kept below it, marked superseded).
+Started as a read-only evidence refresh (local Spark against real S3 Gold), surfaced 3 real
+defects, then — per owner instruction, "solve everything per `@staff-data-engineer`'s doctrine" —
+fixed all 3 through the full governed process (specialist sign-off before every governed-file edit,
+cost approval before every paid Databricks run, artifact-level verification after every redeploy,
+per ADR-009's "never trust job SUCCESS alone"). Full detail:
+`journey/08_SERVING_AND_EVIDENCE.md`'s "Per-BQ evidence (2026-07-17...)" section.
 
-- **BQ-01, 02, 03, 05, 06, 07, 08 — clean, PROVEN at real full scale**, numbers refreshed.
-- **BQ-04 — FIXED, REDEPLOYED, ARTIFACT-VERIFIED.** Root cause: `mart_loan_funnel.py` joined
-  `application` (307,511 rows, 1:1 `SK_ID_CURR`) to `previous_application` (1,670,214 rows, ~4.9
-  rows per `SK_ID_CURR`) without dedup — `application_count` was the fanned-out join's `count(*)`
-  (1,430,155), not distinct applications. Per CLAUDE.md ("No Gold/marts work proceeds without
-  `@staff-data-engineer` sign-off" — `pipeline/gold/` is governed), convened `@staff-data-engineer`
-  before editing: ruled **Option A** — aggregate `application_count` from `application` alone
-  (native 1:1 grain), aggregate `approval_rate_pct`/`avg_days_to_decision` separately from the
-  `previous_application` join, join the two aggregates at `app_month`. Rejected collapsing
-  `previous_application` to one row per customer as "destroying signal ... biases approval_rate/
-  avg_days toward recency and survivorship." Schema-verified `DAYS_DECISION`/`NAME_CONTRACT_STATUS`
-  exist on real `sil_previous_application` first (cleared the `(unverified)` tag in
-  `journey/03_DATA_REQUIREMENTS.md`). Fixed, locally re-verified read-only against real S3 Silver
-  (`application_count=307511` exact match), all 4 gates + 7/7 tests green, committed on
-  `fix/bq04-loan-funnel-grain-fanout`, **PR #10 merged to `main`** (CI gates+tests both passed).
-  **Redeployed**: Databricks job `456069514400579` run `1024722577817236` triggered scoped to just
-  the `mart_loan_funnel` task (`only: ["mart_loan_funnel"]` — all 22 other tasks correctly
-  `SKIPPED`), cluster `0715-022729-6j0g8jhn` auto-started from `TERMINATED`, `result_state=SUCCESS`.
-  **Per ADR-009's Incident Commander doctrine (never trust job SUCCESS alone), independently
-  verified the ARTIFACT**: `_delta_log` version 1 commitInfo via boto3 (`operation=WRITE
-  mode=Overwrite jobRunId=1024722577817236`), then re-read the canonical table directly —
-  `application_count=307511, approval_rate_pct=62.68, avg_days_to_decision=880.37`, matches the
-  local repro exactly. BQ-04 is fully closed out.
-- **BQ-09 — live identity-coverage gap found (NOT fixed — owner deferred, it's a cost/scope
-  decision not a code fix)**: `dim_customer_xwalk`'s PaySim leg still carries only 32,976 sampled
-  native keys (`seed/build_xwalk.py`'s `--paysim-sample` flag, a deliberate D-14 dev-loop-scale
-  cap, BUILD_REPORT.md Task 4) against the real Bronze/Silver PaySim population's 6,353,307
-  distinct `nameOrig` identities — so only 20,859/6,363,370 (0.33%) of real `fact_txn` rows
-  resolve to a `customer_id`. Confirmed NOT a relapse of the session-3-fixed masking bug (the
-  sampled population's join is 100% clean) — the xwalk was never rebuilt to match Bronze/Silver's
-  real full-scale reseed.
-- **BQ-10 — root cause CONFIRMED this session (investigation done, fix NOT yet applied — owner
-  asked to investigate only, not fix)**: `mart_pipeline_health` shows `obp` bronze=20/silver=21
-  (`reconciled=false`). Root cause, verified via `obp_accounts`' own `_delta_log` history (not
-  guessed): `pipeline/silver/common.py`'s `mask_last4()` masks any account ID under 4 characters to
-  `NULL`; one of OBP's 20 real accounts has a short raw `id`. Delta `MERGE ... ON t.pk = s.pk`
-  never matches `NULL = NULL`, so `merge_upsert()`'s `whenNotMatchedInsertAll()` inserts a fresh
-  duplicate NULL row on EVERY Silver rebuild, forever — confirmed by the actual history (version 0:
-  20 rows incl. 1 NULL; version 1 MERGE, same unchanged 20 Bronze rows:
-  `numTargetRowsMatchedUpdated=19, numTargetRowsInserted=1`, not 20 matched). **This is systemic**:
-  any Silver table where a masked column is also the merge key will do this — not OBP-specific.
-  Needs `@staff-data-engineer` sign-off before a fix (`pipeline/silver/` is governed, cites D-07
-  masking doctrine).
+**BQ-04 (mart_loan_funnel grain fan-out) — FIXED, REDEPLOYED, VERIFIED.** `@staff-data-engineer`
+ruled the fix (aggregate `application_count` at `application`'s native grain, not the fanned-out
+join). PR #10 merged; Databricks job `456069514400579` run `1024722577817236` (scoped,
+`mart_loan_funnel` only); boto3 `_delta_log` + direct read confirm `application_count=307511`
+(was 1,430,155).
 
-**Correction to a claim made earlier in this same session**: this environment DOES have working
-Databricks CLI + credentials and can trigger/monitor job runs (`databricks jobs run-now`,
-`jobs get-run`) — the earlier assumption that "this session's environment does not trigger
-Databricks jobs" (based on CLAUDE.md's source-side-compute note, which is actually scoped to
-Docker/SAP HANA/Teradata connections, not Databricks job triggers) was wrong and is corrected here
-rather than left silently stale.
+**BQ-10 (mask_last4()+merge_upsert() NULL-merge-key defect) — FIXED, REDEPLOYED, VERIFIED.**
+`@staff-data-engineer` found a SECOND, more severe defect during review: `sil_obp_accounts`'
+`account_id` was masked but was ALSO the MERGE key and `sil_obp_transactions`' FK target — the FK
+join was completely broken (0/183 matching), independent of the NULL-duplication issue. Ruling:
+never mask an identity/join key; raw key stays for MERGE/FK (Silver is a restricted,
+non-analyst-visible layer), a derived `account_id_last4` column carries the masked value for
+exposure. D-07 clarified in `journey/09_SECURITY_AND_ACCESS.md`. PR #11 merged; poisoned
+`sil_obp_accounts` deleted-and-recreated (staff-DE's explicit remediation — MERGE can't self-heal
+an already-persisted duplicate); redeployed; verified: 20/20 distinct raw `account_id` (0 NULLs),
+FK join now 183/183, `mart_pipeline_health`'s latest run shows **all 5 sources reconciled=true**.
 
-**Next session — concrete candidates, in priority order:**
-1. **BQ-10 fix**: convene `@staff-data-engineer` on the `mask_last4()` + `merge_upsert()` NULL-key
-   defect — decide fix-at-source (e.g. skip/quarantine short-ID rows before masking, per D-07) vs.
-   a different merge-key strategy, then audit whether any OTHER Silver table has the same
-   masked-column-is-the-merge-key shape (blast-radius enumeration, ADR-009 discipline) before
-   fixing just OBP.
-2. **BQ-09 fix/decision**: `@staff-data-engineer` + `@finops` — either rebuild
-   `dim_customer_xwalk`'s PaySim leg at (some larger fraction of) full scale, accept the sampled-
-   customer-population design permanently and document it as intentional in journey/04, or some
-   middle ground. This is a real cost/scope trade-off, not a pure bug fix.
-3. Fasa E serving / local smoke-DAG / the 4 un-Silver'd Home Credit tables — unchanged from the
-   prior entry below, still not started, still not re-litigated.
+**BQ-09 (dim_customer_xwalk PaySim coverage gap) — FIXED, REDEPLOYED, VERIFIED.**
+`@staff-data-engineer` confirmed this was finishing an already-locked D-14 requirement ("full set
+for the canonical run," journey/01:59), not new scope — no `@scope-guardian` needed.
+`@senior-data-engineer` fixed a real OOM in `seed/build_xwalk.py` (the old algorithm materialized
+~7.2M Python dicts in memory; only 4GB available locally) with a memory-safe streaming rewrite —
+verified byte-identical output to the old algorithm, 1GB peak RSS, ~76s on the real 6,362,620-row
+PaySim CSV. The full-scale artifact (7,236,379 rows, ~278MB) couldn't be git-committed (no Git
+LFS configured, GitHub hard-rejects any file over 100MB) — `@staff-data-engineer` ruled a
+load-path change: generate locally, write to S3 as a Delta table under a Gold seed-artifact
+prefix, `dim_customer_xwalk.py` prefers it when present (dev loop, with no S3 artifact, falls
+back to the small git CSV unchanged). Recorded as **ADR-005 Addendum #3**. `@finops` approved the
+12-task downstream Gold redeploy (existing 90-min job timeout already covered the larger join
+size). PR #12 merged.
+
+**A real incident, caught and fully resolved the same session (not swept under the rug)**: the
+12-task BQ-09 redeploy reported all tasks `SUCCESS`, but per-artifact verification found
+`fact_txn`/`fact_card_fraud`/`fact_loan_application` **exactly doubled** — these 3 tables use
+`mode("append")` by design (intentional for genuine incremental runs), and I re-ran them as part
+of a full-rebuild scope without deleting their existing data first (my own operational gap, not a
+new code defect — confirmed via halves matching known-correct baselines EXACTLY: `fact_txn`
+12,726,740 = 2×6,363,370; `fact_card_fraud` 16,426 = 2×8,213; `fact_loan_application` 615,022 =
+2×307,511). Per ADR-009, escalated to `@staff-data-engineer` as Incident Commander before any
+further paid run rather than just re-running blindly. Ruling: fix mechanism correct (delete then
+re-append), but two free checks first — grep confirmed the append-mode class was EXACTLY those 3
+tables (no silent 4th member), and `dim_customer_xwalk`/`dim_customer` (both `overwrite`-mode)
+were directly verified NOT doubled rather than assumed safe from the dependency graph. Both
+passed. One remediation run (3 facts + 7 dependent marts + `mart_pipeline_health` as a
+verification "witness" = 11 tasks) fixed it — final verified state: `fact_txn`=6,363,370 rows,
+**0 NULL `customer_id`, 100.00% fill rate** (was 0.33% before BQ-09 started), all other tables
+back to their correct single-copy baselines, `mart_pipeline_health` 5/5 sources reconciled=true.
+
+**Correction to a claim made earlier this session**: this environment DOES have working Databricks
+CLI + credentials and can trigger/monitor job runs — an earlier assumption that it couldn't
+(misreading CLAUDE.md's source-side-compute note, which is actually scoped to Docker/SAP
+HANA/Teradata connections, not Databricks job triggers) was wrong and is corrected here rather
+than left silently stale.
+
+**Next session — nothing outstanding from this session's work.** Remaining candidates are all
+pre-existing, not new:
+1. Fasa E serving (Snowflake external tables / DuckDB + Power BI page for BQ-01/BQ-02) — explicitly
+   optional per journey/08, only worth doing for a portfolio serving-layer demo.
+2. Local smoke-DAG — owner's own idea, explicitly KIV'd, needs `@scope-guardian` ADR-000 intake
+   before any build, do not start silently.
+3. The 4 un-Silver'd Home Credit tables (`bureau_balance`/`POS_CASH_balance`/`credit_card_balance`/
+   `installments_payments`) stay locked-scope-as-is — no BQ needs them. OBP stays Silver-terminal
+   (ADR-005 Add #2) — do not re-litigate.
 
 ---
 

@@ -12,54 +12,72 @@
 - **Serving veneer (Fasa E, optional)**: Snowflake external tables over the Gold S3 prefix + one
   Power BI page covering BQ-01 + BQ-02, or a DuckDB query if no live Snowflake account.
 
-## Per-BQ evidence (2026-07-17, refreshed against REAL full-Kaggle-scale S3 Gold — 8/10 PROVEN, 1 open cost/scope decision, 1 confirmed-root-cause defect pending fix approval)
+## Per-BQ evidence (2026-07-17, refreshed against REAL full-Kaggle-scale S3 Gold — 10/10 PROVEN)
 
 **Why this section exists**: the 2026-07-15 evidence below (kept further down, historical) was
 captured against a small D-14 dev-loop sample (e.g. `fact_txn` 20,750 rows total). Session 9
 (2026-07-17, same day as this refresh) wired the Gold layer against the REAL full-Kaggle-scale S3
 Silver data seeded earlier that session — PaySim alone is 6,362,620 real transaction rows, Home
-Credit 307,511 real applications — and proved all 16 Gold tables have real Delta commits
-(BUILD_REPORT.md §24). This section re-runs the BQ-01..10 queries directly against those real S3
-Gold tables (read-only — no mart rebuild, no pipeline file touched) to replace the stale numbers.
+Credit 307,511 real applications. This section re-runs the BQ-01..10 queries directly against the
+real S3 Gold tables to replace the stale numbers, and documents 3 real defects found, fixed,
+redeployed, and independently artifact-verified in the same session (not left for "next session").
 
 **Method**: local Spark, `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64` (ADR-009's recorded
 environment fact), reading `s3://banking-lakehouse-pipeline/banking/gold/` directly via an ad hoc
-`hadoop-aws:3.3.4` S3A config (the checked-in `pipeline/common/spark_session.py` doesn't need
-this for the canonical Databricks run, only for this local read-only query — no pipeline file was
-changed to do this). $0 cost — read-only queries against already-materialized Delta tables.
+`hadoop-aws:3.3.4` S3A config for read-only queries ($0). All fixes went through the governed
+process (`@staff-data-engineer` sign-off before touching `pipeline/gold/`/`pipeline/silver/`,
+`@finops` sign-off before paid Databricks runs), and every redeploy was independently verified at
+the artifact level (boto3 `_delta_log` / direct table reads) per ADR-009's "never trust job
+SUCCESS alone" doctrine — including catching and fixing a real operational mistake made mid-session
+(below).
 
-**Honest headline, not "10/10"**: 7 of 10 BQs were clean at real full scale on first pass. Two
-(BQ-04, BQ-09) had real, previously-undetected-at-full-scale defects, surfaced rather than
-silently fixed in the moment — evidence capture came first, fixes went through governance after
-(`@staff-data-engineer` sign-off per CLAUDE.md's Gold-layer gate, since `pipeline/gold/` is a
-governed path). **BQ-04 is now fully fixed, redeployed, and independently artifact-verified on
-the canonical S3 Gold table** (PR #10, Databricks job run `1024722577817236`, boto3 `_delta_log`
-check per ADR-009's "never trust job SUCCESS alone" doctrine) — 8/10 PROVEN. **BQ-09 remains
-open** — it's a cost/scope decision (rebuild a 6.9M-identity crosswalk), not a pure code fix, and
-needs `@finops` alongside `@staff-data-engineer`. **BQ-10's root cause is now CONFIRMED** (not
-just observed): `mask_last4()` (`pipeline/silver/common.py`) masks any account ID shorter than 4
-characters to `NULL`, and Delta `MERGE ... ON t.pk = s.pk` never matches `NULL = NULL` — so
-`merge_upsert()` inserts a fresh duplicate NULL-keyed row every single Silver rebuild, forever,
-for any table where the masked column is also the merge key. Verified via `obp_accounts`'
-Delta history: version 0 (20 rows, includes 1 NULL-keyed row) → version 1 MERGE (same 20 unchanged
-Bronze rows) → `numTargetRowsMatchedUpdated=19, numTargetRowsInserted=1` — the NULL row can never
-match itself, so it duplicates instead of updating. This is a systemic defect in the
-`merge_upsert()` + `mask_last4()` combination, not an OBP-only curiosity — flagged for
-`@staff-data-engineer` fix approval (governed path, `pipeline/silver/` cites D-07 masking
-doctrine), not fixed yet pending that sign-off.
+**The honest full arc, not just the clean ending**: the first evidence pass found 7/10 BQs clean
+and 3 real, previously-undetected-at-full-scale defects (BQ-04, BQ-09, BQ-10) — surfaced, not
+silently patched. Each fix was gated through the appropriate specialist before any code changed:
+- **BQ-04** (`mart_loan_funnel.py` grain fan-out): `@staff-data-engineer` ruled the fix design
+  (aggregate at native grain, don't fan out via the join). Fixed, PR #10, redeployed, artifact-verified.
+- **BQ-10** (`mask_last4()`+`merge_upsert()` NULL-merge-key defect in `sil_obp_accounts`):
+  `@staff-data-engineer` found a SECOND, more severe defect during review — the accounts↔transactions
+  FK join was ALSO broken (masked PK vs unmasked FK, 0/183 matching). Ruled: never mask an
+  identity/join key; split into a raw key (for MERGE/FK) + a derived `_last4` column (for exposure).
+  journey/09_SECURITY_AND_ACCESS.md's D-07 doctrine clarified. Fixed, PR #11, poisoned table
+  deleted+recreated, redeployed, artifact-verified (FK join now 183/183, `obp` reconciled=true).
+- **BQ-09** (`dim_customer_xwalk` PaySim leg capped at a 32,976-row dev-loop sample vs. the real
+  6.9M-identity population): `@staff-data-engineer` ruled this was finishing an already-locked D-14
+  requirement, not new scope. `@senior-data-engineer` fixed a real OOM in the rebuild script
+  (memory-safe streaming patch, verified). The full-scale artifact (278MB) couldn't be git-committed
+  (no Git LFS, GitHub's 100MB hard limit) — `@staff-data-engineer` ruled a load-path change (S3 Delta
+  artifact instead of a git CSV), recorded as **ADR-005 Addendum #3**. `@finops` approved the
+  12-task downstream Gold redeploy. PR #12, merged.
+- **A real incident, caught and fixed the same session**: the BQ-09 downstream redeploy
+  (`dim_customer_xwalk` + 11 dependents) reported all 12 tasks `SUCCESS`, but artifact verification
+  found `fact_txn`/`fact_card_fraud`/`fact_loan_application` **exactly doubled** (12,726,740 =
+  2×6,363,370, etc.) — these 3 tables use `mode("append")` by design, and the redeploy re-ran them
+  without deleting existing data first (an operational gap, not a new code bug). Per ADR-009,
+  escalated to `@staff-data-engineer` as Incident Commander before any further paid run — ruled the
+  fix mechanism correct but caught a gap in the plan (verify `dim_customer_xwalk`/`dim_customer`
+  weren't ALSO silently doubled, don't assume from the dependency graph) and added
+  `mart_pipeline_health` as a "witness" task. Both free checks passed (append-mode class confirmed
+  exactly 3 members; the 2 overwrite-mode tables confirmed NOT doubled). One remediation run (11
+  tasks) fixed it — verified `fact_txn` back to exactly 6,363,370 with **100.00% customer_id fill
+  rate** (was 0.33% before BQ-09's fix even started).
 
 | BQ | Mart | Query location | Output captured | Status |
 |---|---|---|---|---|
-| BQ-01 | mart_customer_360 | pipeline/gold/mart_customer_360.py | **real**, 329,984 rows — top by txn_count: `CUST_BK_2295 txn_count=6 total_txn_value=2069.84 product_count=1` (many ties at max txn_count=6 now that PaySim's per-customer txn_count is capped by BQ-09's xwalk-coverage gap below — only 32,976/6,362,620 PaySim rows resolve to a customer at all) | **PROVEN** |
-| BQ-02 | mart_fraud_daily | pipeline/gold/mart_fraud_daily.py | **real**, 62 rows — top by value: `2026-07-02 TRANSFER fraud_txn_count=158 fraud_txn_value=319264672.56` | **PROVEN** |
+| BQ-01 | mart_customer_360 | pipeline/gold/mart_customer_360.py | **real**, 4,462,220 rows (now matches the true unique bank-wide customer count post-xwalk-fix) — top by txn_count: `CUST_BK_3441 txn_count=12 total_txn_value=1330100.80 product_count=1` | **PROVEN** |
+| BQ-02 | mart_fraud_daily | pipeline/gold/mart_fraud_daily.py | **real**, 62 rows — top by value: `2026-07-02 TRANSFER fraud_txn_count=158 fraud_txn_value=319264672.56` (unaffected by the xwalk fix — aggregates over all transactions regardless of customer_id resolution) | **PROVEN** |
 | BQ-03 | mart_fraud_followup | pipeline/gold/mart_fraud_followup.py | **real** — `fraud_event_count=8213, within_sla_count=0, within_sla_pct=0.0` (same disclosed-not-hidden caveat as before: synthetic seed-time Salesforce Case data, not correlated with real fraud events — `seed/salesforce/load_berka.py`'s `_generate_cases`) | **PROVEN** |
-| BQ-04 | mart_loan_funnel | pipeline/gold/mart_loan_funnel.py | **FIXED same session, code corrected + locally re-verified against real S3 Silver (read-only repro, not yet redeployed to the canonical S3 Gold table — see note below)**: root cause was `mart_loan_funnel.py`'s `application.join(previous, "SK_ID_CURR", "left")`, a 1:N join (`previous_application` has 1,670,214 rows across only 338,857 distinct `SK_ID_CURR`, ~4.9 rows per application) that fanned `application_count` out to 1,430,155 instead of the real 307,511 distinct applications — violated the mart's own "one row per app_month" grain (journey/04_DATA_MODEL.md:30). `@staff-data-engineer` ruled **Option A**: aggregate `application_count` from `application` alone (its native 1:1 grain), aggregate `approval_rate_pct`/`avg_days_to_decision` separately from the `previous_application` join, then join the two aggregates at `app_month` — not Option B (collapsing `previous_application` to one row per customer, which the ruling rejected as "destroying signal ... biases approval_rate/avg_days toward recency and survivorship"). Locally re-verified (read-only, no write): `app_month=2026-07, application_count=307511` (now exactly matches `application`'s real distinct-`SK_ID_CURR` count), `approval_rate_pct=62.68`, `avg_days_to_decision=880.37` — **named as an event-weighted PROXY**, not the current application's own outcome, since `application` itself carries no approval/decision field (`previous_application` is a different loan population, each customer's own history of OTHER prior loans). `DAYS_DECISION`/`NAME_CONTRACT_STATUS` column existence also schema-verified this session (journey/03_DATA_REQUIREMENTS.md, `(unverified)` tag cleared). **Redeployed to the canonical S3 Gold table**: PR #10 merged to `main`, Databricks job `456069514400579` run `1024722577817236` triggered scoped to just the `mart_loan_funnel` task (`--json '{"only": ["mart_loan_funnel"]}'`, all 22 other tasks correctly `SKIPPED (DISABLED)`), `result_state=SUCCESS`. Per ADR-009's Incident Commander doctrine (never trust job SUCCESS alone), independently verified the ARTIFACT two ways: (1) `_delta_log` version 1 commitInfo via boto3 shows `operation=WRITE mode=Overwrite jobRunId=1024722577817236 numOutputRows=1`; (2) re-read the canonical table directly — `application_count=307511, approval_rate_pct=62.68, avg_days_to_decision=880.37`, identical to the local repro. | **PROVEN — fixed, redeployed, and independently artifact-verified on the canonical S3 Gold table** |
-| BQ-05 | mart_risk_segment | pipeline/gold/mart_risk_segment.py | **real**, 307,511 rows — exactly matches `application`'s row count (confirms the customer grain holds correctly here, no fan-out) — sample: `CUST_108201 income_band=HIGH NAME_INCOME_TYPE=State servant is_default=1` | **PROVEN** |
-| BQ-06 | mart_cross_sell | pipeline/gold/mart_cross_sell.py | **real**, 45 qualifying customers — top by balance: `CUST_BK_1384 current_balance=21782.13 last_txn_ts=2026-05-15 prior_campaign_outcome=unknown subscribed_term_deposit=false` | **PROVEN** |
-| BQ-07 | mart_dormancy | pipeline/gold/mart_dormancy.py | **real**, 310,119 rows — longest-dormant: `CUST_BK_1475 last_txn_ts=2023-04-14 days_since_last_txn=1190` | **PROVEN** |
-| BQ-08 | mart_daily_flows | pipeline/gold/mart_daily_flows.py | **real**, 469 rows — `2026-07-15 total_in=391416934.33 total_out=1605248429.29 net_flow=-1213831494.96`; `total_deposits_snapshot=1282397.59` (unchanged from the 07-15 evidence — Berka's own account population/balances didn't grow at full scale, only PaySim's transaction volume did) | **PROVEN** |
-| BQ-09 | fact_txn x dim_customer | pipeline/gold/fact_txn.py + pipeline/gold/dim_customer.py | **real data, LIVE DEFECT FOUND**: `fact_txn` now holds 6,363,370 real rows (6,362,620 paysim + 750 berka — the paysim count matches Silver's real full ingest 1:1, confirming the union itself is complete). But only 20,859/6,363,370 (0.33%) join to a non-NULL `customer_id`. Verified directly: `dim_customer_xwalk`'s paysim leg carries only 32,976 sampled native keys (`seed/build_xwalk.py`'s `--paysim-sample` flag, a deliberate D-14 dev-loop-scale cap — BUILD_REPORT.md Task 4), against the real Bronze/Silver PaySim population's 6,353,307 distinct `nameOrig` identities. **This is NOT a relapse of the session-3-fixed masking bug** — every one of the 32,976 sampled identities resolves correctly (0 unexpected NULLs within the sampled population, confirming the join mechanism itself is correct). It is a separate, previously-undetected coverage gap: the crosswalk was never rebuilt to match Bronze/Silver once those were re-seeded at real full Kaggle scale this session. | **NOT PROVEN AT FULL SCALE — real, live finding; needs `@staff-data-engineer` + `@finops` decision on xwalk rebuild cost/scope (next session)** |
-| BQ-10 | mart_pipeline_health | pipeline/gold/mart_pipeline_health.py | **real**, latest run (2026-07-17 08:24:30 UTC) — `postgres` 307511/307511 reconciled=true, `mssql` 6362620/6362620 reconciled=true, `salesforce` 181/181 reconciled=true, `teradata` 45211/45211 reconciled=true, **`obp` 20 bronze/21 silver reconciled=false**. **Root cause CONFIRMED this session** (not just observed): `pipeline/silver/common.py`'s `mask_last4()` masks any account ID under 4 chars to `NULL`; one of OBP's 20 real public-sandbox accounts has a short raw `id`. Delta `MERGE ... ON t.account_id = s.account_id` never matches `NULL = NULL`, so `merge_upsert()`'s `whenNotMatchedInsertAll()` inserts a fresh duplicate NULL row every Silver rebuild — verified via `obp_accounts`' own `_delta_log` history (version 0: 20 rows incl. 1 NULL; version 1 MERGE, same unchanged 20 Bronze rows: `numTargetRowsMatchedUpdated=19, numTargetRowsInserted=1`, not 20 matched). Systemic: any table where a masked column is also the merge key will do this, not OBP-specific. | **Root cause CONFIRMED, NOT fixed — needs `@staff-data-engineer` sign-off (governed `pipeline/silver/` path, D-07 masking doctrine) before a code change (next session)** |
+| BQ-04 | mart_loan_funnel | pipeline/gold/mart_loan_funnel.py | **FIXED, redeployed, artifact-verified**: root cause was a 1:N join (`application`→`previous_application`) fanning `application_count` out to 1,430,155 instead of the real 307,511 — violated the mart's own "one row per app_month" grain. `@staff-data-engineer`-ruled fix (aggregate at native grain, join at reporting grain). PR #10 merged; Databricks job `456069514400579` run `1024722577817236` (scoped, `mart_loan_funnel` only), `result_state=SUCCESS`; boto3 `_delta_log` + direct read confirm `application_count=307511, approval_rate_pct=62.68, avg_days_to_decision=880.37` (named an event-weighted proxy, not the current application's own outcome, since `application` carries no approval field itself). | **PROVEN** |
+| BQ-05 | mart_risk_segment | pipeline/gold/mart_risk_segment.py | **real**, 307,511 rows — exactly matches `application`'s row count (confirms the customer grain holds correctly, no fan-out) — sample: `CUST_108201 income_band=HIGH NAME_INCOME_TYPE=State servant is_default=1` | **PROVEN** |
+| BQ-06 | mart_cross_sell | pipeline/gold/mart_cross_sell.py | **real**, 6 qualifying customers (down from an earlier 45 pre-xwalk-fix reading — EXPECTED, not a regression: the "no card" filter reads `fact_txn`'s PaySim leg, which now correctly resolves ~100% of customers instead of 0.33%, so far more customers correctly show an existing card and are correctly excluded from the cross-sell list) — top by balance: `CUST_BK_822 current_balance=15256.92 last_txn_ts=2026-01-12` | **PROVEN** |
+| BQ-07 | mart_dormancy | pipeline/gold/mart_dormancy.py | **real**, 285,264 rows (down from an earlier 310,119 pre-xwalk-fix reading — EXPECTED: more customers now show real recent PaySim activity via the fixed identity resolution, so fewer are dormant) | **PROVEN** |
+| BQ-08 | mart_daily_flows | pipeline/gold/mart_daily_flows.py | **real**, 469 rows — `2026-07-16 total_out=449703481.30`; `total_deposits_snapshot=1282397.59` (unaffected by the xwalk fix — Berka-only, no PaySim identity dependency) | **PROVEN** |
+| BQ-09 | fact_txn x dim_customer | pipeline/gold/fact_txn.py + pipeline/gold/dim_customer.py | **FIXED, redeployed, artifact-verified**: root cause was `dim_customer_xwalk`'s PaySim leg capped at a 32,976-row D-14 dev-loop sample against the real 6.9M-identity population (only 0.33% of `fact_txn` PaySim rows resolved a `customer_id`). `@staff-data-engineer`-ruled fix: rebuild the xwalk at full scale (memory-safe streaming patch by `@senior-data-engineer`, OOM'd otherwise — verified 1GB peak RSS, ~76s, byte-identical to the old algorithm) and move the canonical artifact from a git-committed CSV to an S3 Delta artifact (ADR-005 Addendum #3 — the full-scale artifact is ~278MB, no Git LFS configured, GitHub hard-rejects >100MB). PR #12 merged. `@finops`-approved 12-task downstream redeploy surfaced a real operational incident (3 append-mode fact tables doubled — see arc above), root-caused and fixed via `@staff-data-engineer` as Incident Commander (ADR-009) with one remediation run. Final artifact-verified state: `dim_customer_xwalk`=7,236,379 rows, `fact_txn`=6,363,370 rows with **0 NULL `customer_id`, 100.00% fill rate** (was 0.33%). | **PROVEN** |
+| BQ-10 | mart_pipeline_health | pipeline/gold/mart_pipeline_health.py | **FIXED, redeployed, artifact-verified**: root cause was `mask_last4()` masking `sil_obp_accounts.account_id` — which doubled as the table's own MERGE key AND `sil_obp_transactions.account_id`'s FK target. Two live bugs: the FK join could never match (masked PK vs unmasked FK — was 0/183, now 183/183), and mask-to-NULL-under-4-chars broke MERGE's own `NULL != NULL` idempotency, duplicating a row every Silver rebuild. `@staff-data-engineer` ruling: never mask an identity/join key — raw key stays for MERGE/FK, a derived `account_id_last4` column carries the masked value for exposure (D-07 clarified in journey/09_SECURITY_AND_ACCESS.md). PR #11 merged; poisoned table deleted+recreated (staff-DE's explicit remediation — MERGE can't self-heal an already-persisted duplicate); redeployed; boto3/direct-read confirms `sil_obp_accounts` 20/20 distinct raw `account_id` (0 NULLs), and `mart_pipeline_health`'s latest run shows **all 5 sources reconciled=true** (postgres, mssql, salesforce, teradata, obp). | **PROVEN** |
+
+**Not touched this session** (out of scope, unrelated to BQ-01..10): OBP's Silver-terminal status
+(ADR-005 Add #2, settled, not re-litigated) and the 4 un-Silver'd Home Credit tables
+(`bureau_balance`/`POS_CASH_balance`/`credit_card_balance`/`installments_payments`, locked scope).
 
 **Not rebuilt/not re-verified this session** (out of scope per the task): OBP's Silver-terminal
 status (ADR-005 Add #2, settled, not re-litigated) and the 4 un-Silver'd Home Credit tables
@@ -247,7 +265,7 @@ both were cleared and brought fully live in the third session above, which also 
 | Claim (in README/resume/docs) | Evidence (file:line or command output) | Status |
 |---|---|---|
 | "Four bootstrap gates green" (Fasa 0) | pasted gate output in `BUILD_REPORT.md` | pending — filled at Fasa 0 gate checkpoint |
-| "10/10 BQs answerable" | this table, filled per-BQ as Fasa D ships | **8/10 PROVEN at real full scale (2026-07-17), including BQ-04 fixed + redeployed + boto3-artifact-verified on canonical S3; BQ-09 has an open xwalk-coverage gap (cost/scope decision, not a code bug); BQ-10 has a confirmed-root-cause NULL-merge-key defect pending `@staff-data-engineer` fix approval — see "Per-BQ evidence (2026-07-17...)" above** |
+| "10/10 BQs answerable" | this table, filled per-BQ as Fasa D ships | **10/10 PROVEN at real full scale (2026-07-17) — 3 real defects (BQ-04/09/10) found, fixed, redeployed, and independently artifact-verified in the same session, including a mid-session operational incident (3 doubled fact tables) caught and remediated — see "Per-BQ evidence (2026-07-17...)" above** |
 | "Landing→Bronze isolation proven" | Fasa B gate proof (kill-and-rerun, partial-arrival quarantine) | pending Fasa B |
 | "PII masked before Gold" | grep/query proof, no unmasked account/card/birth_number in Gold | pending Fasa C/D |
 
