@@ -52,6 +52,13 @@ def extract_table(
         spark.read.format("jdbc")
         .option("url", jdbc_url)
         .option("dbtable", f"(SELECT * FROM {table} WHERE {predicate}) AS t")
+        # Without an explicit fetchsize, Postgres' JDBC driver buffers the ENTIRE result set
+        # client-side before Spark sees any rows (a well-documented Postgres JDBC trap) — fine
+        # for narrow/small tables, but live-caught (2026-07-17) crashing the JVM on
+        # previous_application (1.67M rows x 37 columns) even though bureau (a similar row
+        # count but far fewer columns) was fine. fetchsize enables server-side cursor batching
+        # regardless of driver (MSSQL/Postgres both honor it), bounding client memory.
+        .option("fetchsize", 10_000)
         .options(**jdbc_properties)
         .load()
     )
