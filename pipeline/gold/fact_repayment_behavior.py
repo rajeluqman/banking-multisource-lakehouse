@@ -44,7 +44,12 @@ def build(spark: SparkSession) -> None:
     credit_card = spark.read.format("delta").load(layer_path("silver", "credit_card_balance"))
     cc_agg = (
         credit_card
-        .withColumn("_utilization", F.col("AMT_BALANCE") / F.col("AMT_CREDIT_LIMIT_ACTUAL"))
+        # try_divide, not a plain `/` -- real AMT_CREDIT_LIMIT_ACTUAL has genuine 0 rows (a
+        # zero-limit card snapshot), invisible in the 5000-row local dev-loop sample but real
+        # at full Databricks scale (live-caught, ANSI mode raises ArithmeticException on a
+        # bare `/` where legacy Spark would have silently returned Infinity/NaN). NULL for
+        # those rows is correct per the STTM's own cc_avg_utilization nullable annotation.
+        .withColumn("_utilization", F.try_divide(F.col("AMT_BALANCE"), F.col("AMT_CREDIT_LIMIT_ACTUAL")))
         .groupBy("SK_ID_CURR")
         .agg(
             F.sum((F.col("SK_DPD") > 0).cast("int")).alias("cc_months_dpd"),
