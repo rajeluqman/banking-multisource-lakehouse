@@ -246,7 +246,7 @@ the owner's data-authenticity bar, `PROJECT_STATUS.md` twelfth-session entry). `
 this build, its own deferral row unaffected.
 
 - **The vetoed alternative (recorded so it is not silently re-proposed):** a single native-grain
-  Gold fact (originally proposed as `fact_installments`, or any unified fact spanning all three
+  Gold fact (originally proposed as *fact_installments*, or any unified fact spanning all three
   source grains) was VETOED. Two independent doctrine violations: (a) it would re-arm the exact
   BQ-04 fan-out bug class (`mart_loan_funnel.sql`'s own precedent — aggregate native-grain sources
   to report grain FIRST, never join raw multi-row-per-customer data) inside a Snowflake external-

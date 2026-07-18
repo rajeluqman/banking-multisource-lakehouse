@@ -145,6 +145,11 @@ stages:
     cadence: on_upstream
     depends_on: [dim_customer_xwalk, silver_crm]  # silver/disp + berka xwalk resolution
 
+  - name: fact_repayment_behavior
+    module: pipeline.gold.fact_repayment_behavior
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_sales]  # ADR-005 Add #5, BQ-11/HC-1 -- silver/installments_payments+credit_card_balance+pos_cash_balance, pre-aggregated to customer grain then joined (fan-out-safe)
+
   # ---- Gold marts, BQ-01..08 (RETIRED from orchestration 2026-07-18, PLAN Phase 3 —
   # PLAN-dbt-marts-serving-layer.md) ----
   # dbt now owns sole authoring for these 8 (governance/plans/PLAN-dbt-marts-serving-layer.md,
@@ -197,4 +202,4 @@ stages:
   - name: compaction
     module: pipeline.gold.compaction
     cadence: on_upstream
-    depends_on: [fact_txn, fact_card_fraud, fact_loan_application, fact_crm_case, fact_previous_application, fact_account_balance, bridge_customer_account, dim_customer, dim_customer_xwalk, dim_campaign_response, dim_date, dim_fx_rate]
+    depends_on: [fact_txn, fact_card_fraud, fact_loan_application, fact_crm_case, fact_previous_application, fact_account_balance, bridge_customer_account, fact_repayment_behavior, dim_customer, dim_customer_xwalk, dim_campaign_response, dim_date, dim_fx_rate]

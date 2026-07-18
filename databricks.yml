@@ -195,6 +195,14 @@ resources:
           spark_python_task:
             python_file: pipeline/gold/bridge_customer_account.py
             source: GIT
+        - task_key: fact_repayment_behavior
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_sales
+          spark_python_task:
+            python_file: pipeline/gold/fact_repayment_behavior.py
+            source: GIT
         # 8 analytics-mart tasks (mart_customer_360, mart_cross_sell, mart_daily_flows,
         # mart_dormancy, mart_fraud_daily, mart_fraud_followup, mart_loan_funnel,
         # mart_risk_segment — BQ-01..08) RETIRED from this job 2026-07-18 (PLAN Phase 3,
@@ -225,6 +233,7 @@ resources:
             - task_key: fact_previous_application
             - task_key: fact_account_balance
             - task_key: bridge_customer_account
+            - task_key: fact_repayment_behavior
             - task_key: dim_customer
             - task_key: dim_customer_xwalk
             - task_key: dim_campaign_response
@@ -240,10 +249,10 @@ resources:
 
 # 2026-07-17: added silver_fraud (PaySim/MSSQL) same session as the first entry below;
 # silver_marketing (Teradata/bank_marketing) + silver_sales (Home Credit/Postgres — only
-# application/bureau/previous_application are wired into Silver; bureau_balance/POS_CASH_balance/
-# credit_card_balance/installments_payments land in Bronze verbatim per ADR-003 D-05 but have no
-# Silver transform written for them, pre-existing locked scope, not touched here) added in the
-# same session's continuation — cleared by @finops (fresh per-source ceilings: PaySim ~$15/2hr,
+# application/bureau/previous_application were wired into Silver at the time; bureau_balance/
+# POS_CASH_balance/credit_card_balance/installments_payments landed in Bronze verbatim per
+# ADR-003 D-05 with no Silver transform, pre-existing locked scope, not touched that session)
+# added in the same session's continuation — cleared by @finops (fresh per-source ceilings: PaySim ~$15/2hr,
 # Home Credit $20-25/2.5-3hr after a corrected row-count re-ruling capped bureau_balance/
 # installments_payments/POS_CASH_balance at 2M rows each; Teradata's 45,211-row UCI dataset was
 # never a cost concern) and @scope-guardian (already-locked ADR-006 scope, no new mart/BQ) same
