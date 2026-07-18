@@ -3,7 +3,8 @@ version: 2
 # dbt's ONLY sources — read-only Snowflake external tables over the Gold S3 prefix
 # (pipeline/serving/snowflake_setup.sql). NO physical copy into Snowflake (ADR-002 addendum,
 # PLAN-dbt-marts-serving-layer.md Q2) — S3 stays sole physical truth. 7 original facts/dims +
-# 5 promoted from Silver (ADR-005 Addendum #4, 2026-07-18) so dbt never touches Silver or
+# 5 promoted from Silver (ADR-005 Addendum #4, 2026-07-18) + 1 more (ADR-005 Addendum #5,
+# 2026-07-18, BQ-11/HC-1 fact_repayment_behavior) = 13, so dbt never touches Silver or
 # dim_customer_xwalk directly — identity resolution stays single-path in Spark.
 sources:
   - name: gold
@@ -68,3 +69,17 @@ sources:
             tests: [not_null, unique]
       - name: bridge_customer_account
         description: Customer<->account N:N bridge table (not a CTE — journey/04), promoted to Gold.
+      # ---- ADR-005 Addendum #5 (2026-07-18, BQ-11/HC-1) ----
+      - name: fact_repayment_behavior
+        description: >-
+          Customer-grain repayment-behavior profile (late-payment/underpayment/DPD signals),
+          fan-out-safe aggregation of sil_installments_payments/sil_credit_card_balance/
+          sil_pos_cash_balance. 334,710 rows verified at full canonical scale (2026-07-18);
+          287,530 have a resolved customer_id, 47,180 are NULL (child SK_ID_CURR with no
+          home_credit xwalk match — R-29 late-arriving pattern, same class as other Home
+          Credit builders, not a defect). No `not_null` test on customer_id for this reason;
+          `unique` holds (dbt's built-in unique test excludes NULLs, verified no true
+          duplicates among the 287,530 resolved rows).
+        columns:
+          - name: customer_id
+            tests: [unique]

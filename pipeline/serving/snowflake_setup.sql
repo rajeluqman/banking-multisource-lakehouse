@@ -298,6 +298,33 @@ ALTER EXTERNAL TABLE fact_previous_application REFRESH;
 ALTER EXTERNAL TABLE fact_account_balance REFRESH;
 ALTER EXTERNAL TABLE bridge_customer_account REFRESH;
 
+-- ============================================================================
+-- HALF 4 (2026-07-18, ADR-005 Addendum #5, BQ-11/HC-1) — fact_repayment_behavior. Column
+-- types pulled from the REAL deployed S3 _delta_log/00000000000000000000.json schemaString
+-- AFTER the Databricks deploy (ground truth, same discipline as HALF 3 above, not the local
+-- dev-loop fixture) -- verified: 334,710 rows, customer_id grain-unique.
+-- ============================================================================
+
+CREATE OR REPLACE EXTERNAL TABLE fact_repayment_behavior (
+    customer_id           STRING AS (value:customer_id::string),
+    installment_count     BIGINT AS (value:installment_count::bigint),
+    late_payment_rate     DOUBLE AS (value:late_payment_rate::double),
+    underpayment_rate     DOUBLE AS (value:underpayment_rate::double),
+    avg_days_late         DOUBLE AS (value:avg_days_late::double),
+    cc_months_dpd         BIGINT AS (value:cc_months_dpd::bigint),
+    cc_avg_utilization    DOUBLE AS (value:cc_avg_utilization::double),
+    pos_months_dpd        BIGINT AS (value:pos_months_dpd::bigint),
+    max_dpd               BIGINT AS (value:max_dpd::bigint)
+)
+LOCATION = @BANKING_GOLD_STAGE/fact_repayment_behavior/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/fact_repayment_behavior (ADR-005 Add #5, BQ-11/HC-1, grain: customer_id, overwrite snapshot). Fan-out-safe: sil_installments_payments/sil_credit_card_balance/sil_pos_cash_balance each pre-aggregated to customer grain independently in Spark before the join.';
+
+ALTER EXTERNAL TABLE fact_repayment_behavior REFRESH;
+
 -- serving_ro role (journey/09_SECURITY_AND_ACCESS.md line 69) — Gold-only, read-only, Snowflake side.
 CREATE ROLE IF NOT EXISTS SERVING_RO;
 GRANT USAGE ON DATABASE BANKING TO ROLE SERVING_RO;
