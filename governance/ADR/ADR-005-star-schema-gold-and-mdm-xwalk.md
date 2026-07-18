@@ -231,3 +231,86 @@ classification (`journey/09_SECURITY_AND_ACCESS.md` lines 40-41: `credit_in_defa
   reconciles to each retiring mart's current S3 numbers (PLAN Phase-2 gate, extended to the 5 new
   intermediates). Revert = drop 5 tables + git-revert builders. Cost of the 5 extra Gold builder
   runs + affected-mart rebuild routed through `@finops` in the same envelope as PLAN Step-3.
+
+**Addendum #5 (2026-07-18, @staff-data-engineer grain ruling) — HC-1/BQ-11 ("repayment discipline
+vs default"): ONE new customer-grain Gold fact, `fact_repayment_behavior`, fed by 3 new native-grain
+Silver builders over REAL Home Credit child tables; answered by a new dbt view,
+`mart_repayment_risk`.** This is `@scope-guardian`'s owner-authorized 11th business question
+(`governance/BACKLOG.md` "Superseded deferrals" — supersedes 3 of 4 rows in the 2026-07-18 HC
+Bronze→Silver deferral). BQ-11 extends BQ-05 (demographic risk) with a behavioral-risk signal: does
+a customer's actual repayment behavior (late-payment %, underpayment %, days-past-due) predict
+their Home Credit `TARGET` default? Uses `installments_payments`, `credit_card_balance`,
+`pos_cash_balance` — REAL Kaggle Home Credit data, currently Bronze-only, zero fabrication (passes
+the owner's data-authenticity bar, `PROJECT_STATUS.md` twelfth-session entry). `bureau_balance` (the
+4th un-Silver'd HC table) stays OUT — different join path (`SK_ID_BUREAU`→`bureau`), not part of
+this build, its own deferral row unaffected.
+
+- **The vetoed alternative (recorded so it is not silently re-proposed):** a single native-grain
+  Gold fact (originally proposed as `fact_installments`, or any unified fact spanning all three
+  source grains) was VETOED. Two independent doctrine violations: (a) it would re-arm the exact
+  BQ-04 fan-out bug class (`mart_loan_funnel.sql`'s own precedent — aggregate native-grain sources
+  to report grain FIRST, never join raw multi-row-per-customer data) inside a Snowflake external-
+  table VIEW scanning 13M+ rows per query, both a serving-cost anti-pattern and the wrong place to
+  keep the anti-fan-out invariant; (b) `installments_payments` (installment-event grain),
+  `credit_card_balance` (CC monthly-snapshot grain), and `pos_cash_balance` (POS monthly-snapshot
+  grain) are three different grains and three different business entities — one fact spanning all
+  three is a 1-table-1-grain-1-entity violation (line 47 above) even before the fan-out risk is
+  considered. Native-grain child rows terminate at Silver; Spark (not dbt/Snowflake) does the
+  fan-out-safe aggregation to customer grain, landing ONE derived Gold fact.
+
+- **The three new Silver builders (native grain, content-quality gate only — ADR-003, no
+  aggregation at this layer):**
+  1. `sil_installments_payments` — one row per scheduled installment per previous-application.
+  2. `sil_credit_card_balance` — one row per credit-card previous-application × month snapshot.
+  3. `sil_pos_cash_balance` — one row per POS-cash previous-application × month snapshot.
+  All three: **no SCD** (append/snapshot, natural-key MERGE — same class as `sil_card_txn`).
+  `SK_ID_CURR` stays a plain FK column at Silver; the xwalk hop to `customer_id` happens at Gold,
+  same pattern as `fact_previous_application.py`.
+
+- **The new Gold fact:** `fact_repayment_behavior` — **one row per `customer_id`**; **overwrite
+  snapshot** (no SCD, recomputed each run — same stated class as `fact_account_balance`, Addendum
+  #4 item 4). A Kimball consolidated fact: three 1:N sources rolled into one customer-grain
+  behavioral-risk profile, not a mixed-domain table (the entity is singular — "this customer's
+  repayment behavior" — with three source inputs, same shape as `dim_customer` surviving many
+  sources into one golden record). Representative columns (final list in STTM):
+  `customer_id, installment_count, late_payment_rate, underpayment_rate, avg_days_late,
+  cc_months_dpd, cc_avg_utilization, pos_months_dpd, max_dpd`. Measures are mixed-additivity (rates
+  non-additive) — noted in STTM, not re-derived downstream.
+
+- **Fan-out-safe aggregation strategy (the load-bearing part, stated so it can't drift):** in the
+  ONE Spark builder for `fact_repayment_behavior` — (1) aggregate `sil_installments_payments`
+  `groupBy(SK_ID_CURR)` → 1 row/customer; (2) aggregate `sil_credit_card_balance`
+  `groupBy(SK_ID_CURR)` → 1 row/customer; (3) aggregate `sil_pos_cash_balance`
+  `groupBy(SK_ID_CURR)` → 1 row/customer; (4) resolve `SK_ID_CURR → customer_id` via
+  `dim_customer_xwalk` (`source_system='home_credit'`) AFTER aggregation (xwalk grain is 1:1, so
+  order doesn't fan out either way, but resolving post-aggregation keeps the aggregation itself
+  source-native); (5) `FULL OUTER JOIN` the three already-1-row-per-customer results on
+  `customer_id` — cannot fan out, because no input to the join has more than one row per customer.
+  **Invariant for any future reader**: never join two multi-row-per-customer sources (or either of
+  them to `fact_loan_application`) at raw grain — collapse each 1:N source to 1-row-per-customer in
+  its own aggregate first, join only pre-aggregated customer-grain results.
+
+- **The BQ-11 answer, `mart_repayment_risk` — dbt view**, per the standing BQ-01..08 convention
+  (views over Gold external tables, `governance/plans/PLAN-dbt-marts-serving-layer.md`). **One row
+  per `customer_id`** (mirrors `mart_risk_segment`/BQ-05, the story it extends). Reads Gold ONLY:
+  `fact_repayment_behavior` JOIN `fact_loan_application` (for `target_default`) — both already
+  customer-grain, 1:1 join, no fan-out in the view, Silver boundary untouched (Addendum #4). Adds a
+  14th `sources.yml` external table (`fact_repayment_behavior`) and a 9th dbt mart model.
+
+- **Clean-ERD doctrine check:** 1 table = 1 grain = 1 entity — satisfied (3 Silver at native grain,
+  1 Gold fact at customer grain, 1 view); the vetoed unified native-grain fact is the violation this
+  ruling avoids. Bridge not CTE for N:N — **N/A, deliberately not introduced**: customer↔installment
+  is 1:N aggregation, not N:N: a bridge table here would itself be wrong, named explicitly so none
+  gets added. Serving = view never a duplicated table — `mart_repayment_risk` is a dbt view;
+  `fact_repayment_behavior` is a modeled Gold intermediate (conformed, reusable), not a serving
+  duplicate. One explicit SCD per table — stated per table above (all no-SCD/snapshot, consistent
+  with ADR-005's v1 no-Type-2 stance).
+
+- **What this does NOT change:** no existing table's grain or schema; `dim_customer`, the xwalk,
+  and every BQ-01..10 mart are untouched (this extends the BQ-05 story without editing
+  `mart_risk_segment`). `bureau_balance` stays Bronze-only, its own deferral unaffected.
+
+- **Blast radius / reversibility:** LOW-MODERATE / HIGH. Fully additive: 3 Silver builders + 1 Gold
+  builder + 1 dbt model + 1 `sources.yml` row. Revert = drop the new tables + git-revert the
+  builders. Cost of the Gold aggregation run (13M+ installment rows) routes through `@finops`
+  before the canonical run.
