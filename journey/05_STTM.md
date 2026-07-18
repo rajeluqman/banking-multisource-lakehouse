@@ -97,6 +97,73 @@
 | income_type | string | Postgres `application` | NAME_INCOME_TYPE | passthrough | Per null-rate expectation |
 | kept_ext_columns | — | Postgres `application` | ~122 `EXT_SOURCE_*`-style anonymized columns | Bronze keeps ALL verbatim (R-02); Silver prunes to the STTM-selected set above — any column not listed here is dropped at Silver, not silently carried forward | — |
 
+### Target: `silver.sil_installments_payments` (Home Credit, ADR-005 Add #5, BQ-11/HC-1)
+> Real schema confirmed against Bronze/local dev-loop CSV (`data/raw/home_credit/
+> installments_payments.csv`), not assumed from the planning doc (CLAUDE.md anti-shortcut rule #5).
+> **R-03 orphan quarantine (all 3 HC-1 child tables):** rows whose `SK_ID_CURR` has no matching
+> `sil_application` row go to `_quarantine_<table>_orphans`, counted + reported, never silently
+> dropped — same treatment as `sil_bureau` (`pipeline/silver/silver_sales.py::build_hc_child_
+> table`). At full scale ~14.8% of installments rows are orphans: they key to Home Credit
+> TEST-set applicants (only the 307,511 train applicants, the ones with `TARGET`, are loaded as
+> `application`), so they carry no `TARGET` and are unusable for BQ-11.
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| sk_id_prev | string | Postgres `installments_payments` | SK_ID_PREV | passthrough, FK to `sil_previous_application` | No |
+| sk_id_curr | string | Postgres `installments_payments` | SK_ID_CURR | passthrough — plain FK column at Silver; xwalk hop to `customer_id` happens at Gold (`fact_repayment_behavior.py`), same pattern as `fact_previous_application.py` | No |
+| num_instalment_version | int | Postgres `installments_payments` | NUM_INSTALMENT_VERSION | passthrough — part of natural grain key (installment plan can be re-versioned) | No |
+| num_instalment_number | int | Postgres `installments_payments` | NUM_INSTALMENT_NUMBER | passthrough — part of natural grain key (`sk_id_prev, num_instalment_version, num_instalment_number` = PK/MERGE key, one row per scheduled installment) | No |
+| days_instalment | int | Postgres `installments_payments` | DAYS_INSTALMENT | passthrough — due date, relative to application date (negative = days before application) | No |
+| days_entry_payment | decimal | Postgres `installments_payments` | DAYS_ENTRY_PAYMENT | passthrough — actual paid date, same relative scale; `days_entry_payment - days_instalment` > 0 = late (Gold-layer derivation, not computed here) | Yes (unpaid installment) |
+| amt_instalment | decimal | Postgres `installments_payments` | AMT_INSTALMENT | passthrough — scheduled amount; `currency = "unitless"` (same D-12/R-14 exception as `sil_application`, anonymized Kaggle competition data) | No |
+| amt_payment | decimal | Postgres `installments_payments` | AMT_PAYMENT | passthrough — actual paid amount; `amt_payment < amt_instalment` = underpayment (Gold-layer derivation) | Yes (unpaid installment) |
+
+### Target: `silver.sil_credit_card_balance` (Home Credit, ADR-005 Add #5, BQ-11/HC-1)
+> Real schema confirmed against Bronze/local dev-loop CSV (`data/raw/home_credit/
+> credit_card_balance.csv`). Silver keeps ALL source columns verbatim (R-02 style); only the
+> columns `fact_repayment_behavior.py` actually reads are listed below — the rest pass through
+> untouched, not dropped (unlike `sil_application`'s explicit ~122-column prune, this table has no
+> comparable anonymized-column bloat to prune).
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| sk_id_prev | string | Postgres `credit_card_balance` | SK_ID_PREV | passthrough, FK to `sil_previous_application` | No |
+| sk_id_curr | string | Postgres `credit_card_balance` | SK_ID_CURR | passthrough — plain FK column, xwalk hop at Gold | No |
+| months_balance | int | Postgres `credit_card_balance` | MONTHS_BALANCE | passthrough — part of natural grain key (`sk_id_prev, months_balance` = PK/MERGE key, one row per CC-previous-application per month snapshot) | No |
+| amt_balance | decimal | Postgres `credit_card_balance` | AMT_BALANCE | passthrough; `currency = "unitless"` (same exception as `sil_application`) | No |
+| amt_credit_limit_actual | decimal | Postgres `credit_card_balance` | AMT_CREDIT_LIMIT_ACTUAL | passthrough — `amt_balance / amt_credit_limit_actual` = utilization (Gold-layer derivation) | No |
+| sk_dpd | int | Postgres `credit_card_balance` | SK_DPD | passthrough — days past due this snapshot | No |
+| sk_dpd_def | int | Postgres `credit_card_balance` | SK_DPD_DEF | passthrough — DPD excluding tolerance-threshold defaults, kept alongside `sk_dpd` for lineage, not merged | No |
+
+### Target: `silver.sil_pos_cash_balance` (Home Credit, ADR-005 Add #5, BQ-11/HC-1)
+> Real schema confirmed against Bronze/local dev-loop CSV (`data/raw/home_credit/
+> POS_CASH_balance.csv`).
+| Target column | Type | Source | Source column | Transform rule | Nullable? |
+|---|---|---|---|---|---|
+| sk_id_prev | string | Postgres `pos_cash_balance` | SK_ID_PREV | passthrough, FK to `sil_previous_application` | No |
+| sk_id_curr | string | Postgres `pos_cash_balance` | SK_ID_CURR | passthrough — plain FK column, xwalk hop at Gold | No |
+| months_balance | int | Postgres `pos_cash_balance` | MONTHS_BALANCE | passthrough — part of natural grain key (`sk_id_prev, months_balance` = PK/MERGE key, one row per POS-cash-previous-application per month snapshot) | No |
+| cnt_instalment | decimal | Postgres `pos_cash_balance` | CNT_INSTALMENT | passthrough — total installments in the contract | Yes |
+| sk_dpd | int | Postgres `pos_cash_balance` | SK_DPD | passthrough — days past due this snapshot | No |
+| sk_dpd_def | int | Postgres `pos_cash_balance` | SK_DPD_DEF | passthrough — DPD excluding tolerance-threshold defaults | No |
+
+### Target: `gold.fact_repayment_behavior` (ADR-005 Add #5, BQ-11/HC-1)
+> Grain: **strictly** one row per `customer_id` (ADR-005 Add #5's fan-out-safe aggregation — each
+> Silver source pre-aggregated to customer grain independently, THEN joined; unresolved child
+> `SK_ID_CURR` — test-set applicants, no `TARGET` — are R-03-quarantined at Silver AND filtered in
+> the Gold builder, never written as NULL-keyed rows). Column-level detail lives in
+> `pipeline/gold/fact_repayment_behavior.py`'s docstring; the contract fixed here is source→target
+> lineage + the metric semantics that a reader could otherwise misread.
+| Target column | Type | Source | Transform rule | Nullable? |
+|---|---|---|---|---|
+| customer_id | string | `dim_customer_xwalk` (`source_system='home_credit'`) | resolved from `sk_id_curr` post-aggregation; unresolved rows filtered (see grain note) | No |
+| installment_count | int | `sil_installments_payments`, aggregated | `count(*)` per customer | Yes (customer may have only CC/POS history, no installments) |
+| late_payment_rate | decimal | `sil_installments_payments`, aggregated | fraction of **all** installments that are late; late = `days_entry_payment > days_instalment` OR **unpaid** (`days_entry_payment IS NULL` — every installment is past-due, so a never-paid one is delinquent, not "unknown"; verified 0 rows with `days_instalment >= 0` in the real 13.6M-row data) | Yes (no installment history) |
+| underpayment_rate | decimal | `sil_installments_payments`, aggregated | fraction of **all** installments underpaid; underpaid = `amt_payment < amt_instalment` OR **unpaid** (`amt_payment IS NULL`, paid nothing) | Yes |
+| avg_days_late | decimal | `sil_installments_payments`, aggregated | mean(`days_entry_payment - days_instalment`) over **paid-late** installments only (a never-paid installment has no measurable lateness magnitude, so it is excluded from this mean even though it counts toward `late_payment_rate`) | Yes |
+| cc_months_dpd | int | `sil_credit_card_balance`, aggregated | count of months where `sk_dpd > 0` | Yes (no CC history) |
+| cc_avg_utilization | decimal | `sil_credit_card_balance`, aggregated | mean per-month `amt_balance / amt_credit_limit_actual`, **clamped `>= 0`** (a negative balance = credit/overpayment → 0 utilization, never a negative "utilization"), NULL preserved for a zero limit (`try_divide`), over-limit (`>1`) kept as a real risk signal | Yes |
+| pos_months_dpd | int | `sil_pos_cash_balance`, aggregated | count of months where `sk_dpd > 0` | Yes (no POS history) |
+| max_dpd | int | `sil_credit_card_balance` + `sil_pos_cash_balance`, aggregated | max(`sk_dpd`) across both sources | Yes |
+
 ## Transform conventions used project-wide
 - **Naming**: `snake_case` everywhere; Silver tables prefixed `sil_`, Gold dims `dim_`, facts
   `fact_`, marts `mart_` (matches `gates/framework.yml` `model_globs`/doc-reference C1 check).

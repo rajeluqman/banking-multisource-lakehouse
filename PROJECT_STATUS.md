@@ -2,6 +2,210 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-18 (thirteenth session, continued — independent audit round, model switched to Opus) —
+✅ 7 real findings from an independent re-audit of the just-built HC-1/BQ-11, ALL FIXED,
+RE-DEPLOYED, RE-VERIFIED. PR #14 open, updated with the fixes.** The build below (first pass)
+tested green and reconciled cleanly, but a fresh Opus-driven audit (re-reading the code and
+re-querying live data rather than trusting the session's own narrative) found: (1) the Gold
+fact's declared "one row per customer_id" grain didn't actually hold — 47,180 rows had a NULL key
+(dbt's `unique` test silently excludes NULLs, so it passed anyway); (2) unpaid installments
+propagated NULL and silently dropped out of `late_payment_rate`/`underpayment_rate`, making the
+worst customers look clean; (3) `cc_avg_utilization` let negative values through uncapped; (4) the
+3 new Silver tables had zero DQ coverage (no R-03 orphan quarantine, unlike `bureau`); (5) the
+evidence doc overclaimed "full canonical scale" when 2 of 3 tables were finops-capped 2M samples
+(14-20% of real Kaggle size); (6)/(7) two smaller doc gaps (mart selection-bias scope,
+`avg_days_late` semantics). All fixed (commit `9e5eb19`), local-verified free first, then owner
+confirmed a real S3 deletion of the 3 poisoned Silver prefixes (required because `merge_upsert`
+never deletes — the pre-fix orphan rows would have stayed forever otherwise, same lesson as the
+BQ-10 "delete and recreate" precedent), one more scoped Databricks run, artifact-verified against
+S3 + live Snowflake: `fact_repayment_behavior` now strictly 287,530 rows / 0 NULL customer_id / 0
+duplicates / utilization floor 0.0 / 0 customers with a NULL late-rate despite having installment
+history. `mart_repayment_risk`'s signal is now cleaner AND stronger: `cc_avg_utilization` shows a
+~1.5x gap between defaulted (0.47) and non-defaulted (0.31) customers, the strongest of the 3
+metrics. Full detail: `journey/08_SERVING_AND_EVIDENCE.md`'s BQ-11 section (rewritten, not
+appended, so it reads as one coherent account).
+
+**2026-07-18 (thirteenth session) — ✅✅✅ HC-1/BQ-11 BUILT, DEPLOYED, AND VERIFIED end-to-end,
+on `feat/bq-11-home-credit-repayment` (branched off `main` after PR #13 merged). All 9 ordered
+steps from the twelfth-session checkpoint below done. PR #14 open — see the audit-round entry
+above for the fixes applied after this first pass.**
+
+**A branch-hygiene issue caught and fixed before any build work**: the twelfth-session checkpoint
+commit (`c9e9743`) had been made on the OLD `feat/dbt-marts-gold-promotion` branch AFTER PR #13
+already merged to `main` — so it was never actually merged anywhere, and a fresh branch cut from
+`main` silently lost it (confirmed via `git merge-base --is-ancestor`, not assumed). Fixed by
+cherry-picking `c9e9743` onto the new branch before proceeding. Worth remembering: after a PR
+merges, don't keep committing checkpoints to the now-stale local feature branch — switch to `main`
+first, or the next session's fresh branch will silently miss them.
+
+**What's live now (all real, all independently artifact-verified per ADR-009 — not "should
+work"):**
+1. **`@staff-data-engineer` grain ruling** — vetoed the originally-proposed native-grain
+   `fact_installments` (would have re-armed the BQ-04 fan-out bug class + violated 1-table-1-
+   grain-1-entity across 3 different source grains). Ruled: ONE customer-grain Gold fact
+   `fact_repayment_behavior` (overwrite snapshot), fed by 3 native-grain Silver builders
+   (`sil_installments_payments`/`sil_credit_card_balance`/`sil_pos_cash_balance`, each
+   pre-aggregated to customer grain independently in Spark before any join — the fan-out-safe
+   invariant), answered by a dbt view `mart_repayment_risk`. Recorded as ADR-005 Addendum #5.
+2. **`@scope-guardian` sign-off** — BQ-11 supersedes 3-of-4 rows in the 2026-07-18 HC
+   Bronze→Silver deferral (its own revisit-trigger (a) met); recorded in `governance/BACKLOG.md`
+   "Superseded deferrals" table (a real subagent Write-tool failure was caught here too — first
+   attempt reported success but the file was unchanged on disk, verified via `git diff`, retried
+   and confirmed for real the second time — never trust a tool-call report without checking the
+   actual file state).
+3. **Docs written before any builder** (the standing sequencing discipline): ADR-005 Addendum #5,
+   BQ-11 row in `journey/02_BUSINESS_QUESTIONS.md`, new grain declarations in
+   `journey/04_DATA_MODEL.md`, STTM column mappings in `journey/05_STTM.md` (verified against the
+   REAL Bronze CSV headers on local disk, not assumed from the planning doc — composite grain keys
+   confirmed: `installments_payments` = `sk_id_prev+num_instalment_version+num_instalment_number`;
+   `credit_card_balance`/`pos_cash_balance` = `sk_id_prev+months_balance`).
+4. **3 Silver builders** (`silver_sales.py`'s `SIMPLE_TABLES`) — `merge_upsert()` extended to
+   accept a composite `pk_column` list (none of the 3 tables has a single-column natural key), a
+   genuine reusable primitive extension, not a one-off. Local-verified free: grain-unique,
+   5000/5000 rows each against the dev-loop sample.
+5. **`fact_repayment_behavior`** (`pipeline/gold/fact_repayment_behavior.py`) — fan-out-safe by
+   construction: each Silver source aggregated to customer grain independently (`groupBy
+   SK_ID_CURR`) before any join. Local-verified free (fan-out check via row-count-vs-distinct
+   comparison), then wired into `databricks.yml`/`pipeline/orchestrate_config.yml` (new task,
+   `depends_on: [dim_customer_xwalk, silver_sales]`) and `pipeline/gold/compaction.py`
+   (`MAINTENANCE_TARGETS`, `ZORDER BY customer_id`, same pattern as every other customer-keyed
+   Gold fact).
+6. **`@finops` cost sign-off** — GO, $5-8/20-35min ceiling for this incremental addition (much
+   lighter than the original $20-25/2.5-3hr Home Credit onboarding ceiling, since Bronze was
+   already landed — this run does zero JDBC extraction), scoped run required (`--only`), existing
+   90-min job timeout stands as the backstop, unchanged.
+7. **ONE paid Databricks run — with a real ADR-009 strike-1 incident, caught and fixed same
+   session.** First attempt: `silver_sales` SUCCESS, but `fact_repayment_behavior` FAILED with
+   `[DIVIDE_BY_ZERO]` — real `credit_card_balance` has genuine `AMT_CREDIT_LIMIT_ACTUAL=0` rows
+   (invisible in the 5000-row local dev-loop sample, present at full canonical scale), and
+   Databricks' Spark runs `spark.sql.ansi.enabled=true` by default (raises on a bare `/` where
+   legacy Spark would silently return `Infinity`/`NaN`). Root-caused from the REAL stack trace
+   (`databricks jobs get-run-output`, not guessed), reproduced for free locally (ANSI mode + a
+   synthetic 2-row zero-divisor test proved `F.try_divide` fixes it BEFORE spending a second paid
+   run), fixed, redeployed, retried scoped to just the 2 failed tasks. Second attempt: **SUCCESS**
+   both tasks. Artifact-verified (not job-status-trusted) via S3 `_delta_log`: `fact_repayment_
+   behavior` version 0 (`WRITE`, `numOutputRows=334710`) then version 1 (real `OPTIMIZE`,
+   `zOrderBy=["customer_id"]`); 3 Silver tables' row counts match `LARGE_TABLE_CAPS` exactly
+   (2,000,000 / 3,840,312 / 2,000,000). Grain-checked directly (not assumed): 287,530 rows have a
+   resolved `customer_id`, 47,180 are NULL (unmatched `home_credit` xwalk rows — R-29 late-arriving
+   pattern, same class as other Home Credit builders, not a defect); **zero true duplicate
+   `customer_id`** among the resolved rows, confirmed by direct query, not inferred.
+8. **Serving wired with the REAL deployed schema** (pulled from S3 `_delta_log` after the paid
+   run, not the local dev-loop fixture — same discipline as ADR-005 Add #4's own documented
+   lesson): 14th Snowflake external table (`pipeline/serving/snowflake_setup.sql`), `sources.yml`
+   grows to 13 tables, new dbt view `mart_repayment_risk.sql` (1:1 inner join, both sources already
+   customer-grain, cannot fan out). `dbt build`: 43/43 PASS, 0 errors. Live-queried reconciliation:
+   287,530 rows, grain-unique, and **a real behavioral signal**: `target_default=1` customers show
+   `late_payment_rate=0.1058`/`underpayment_rate=0.1205` vs `0.0767`/`0.0864` for non-defaulters —
+   the expected direction, computed from 287,530 real rows, BQ-11 genuinely answered.
+9. **A real gate-coverage gap found and fixed**: `gates/framework.yml`'s `model_globs` only ever
+   covered `pipeline/silver|gold/**/*.py` — the existing 8 dbt marts (BQ-01..08) never actually
+   exercised dbt coverage in `doc_reference_contract.py`; their retired PySpark twins (kept on disk
+   for git history) happened to satisfy the C1 check by coincidence. `mart_repayment_risk` has no
+   PySpark twin (dbt-only from the start), which surfaced the gap for real. Fixed: added
+   `dbt/models/marts/*.sql` to `model_globs`, corrected a stale "no dbt" comment left over from
+   before the 2026-07-17 dbt adoption. All 4 gates green throughout the rest of the build.
+10. **`journey/08_SERVING_AND_EVIDENCE.md`** updated with full BQ-11 evidence (its own new
+    section, since unlike BQ-01..08 there's no retiring PySpark mart to reconcile against) and the
+    top-of-doc serving summary (14 external tables, BQ-11 added to the dbt-served list).
+
+**Next session — nothing outstanding from this session's own scope.** Candidates, none blocking:
+1. Open/merge the PR for `feat/bq-11-home-credit-repayment` → `main` (owner's call, check if
+   already done before assuming it isn't).
+2. `bureau_balance` (the 4th un-Silver'd HC table) stays deferred under its own original
+   `governance/BACKLOG.md` row — no BQ needs it, not touched by HC-1, do not re-litigate.
+3. BQ-03/CRM's self-fabricated-data weakness (flagged, not actioned, twelfth-session entry below)
+   remains open for a future session if the owner wants to replace it with a real Kaggle source.
+
+---
+
+
+**2026-07-18 (twelfth session — DESIGN/DECISION ONLY, NOTHING BUILT). Next action: build HC-1
+(new BQ-11) on REAL Home Credit data, starting from the `@staff-data-engineer` grain ruling.**
+
+This session was a data-authenticity audit + scoping conversation. Outcomes, all decided with the
+owner, nothing coded yet:
+
+**DECIDED — build HC-1 (= new BQ-11).** "Repayment discipline vs default": does a customer's
+actual repayment behavior (late-payment %, underpayment %, days-past-due) predict their Home
+Credit `TARGET` default? **Extends BQ-05** (adds *behavioral* risk next to the existing
+*demographic* risk segment). Uses the REAL Kaggle Home Credit child tables currently sitting
+Bronze-only (verified real + full-scale on S3 this session):
+- `installments_payments` (50.9 MB) — `AMT_INSTALMENT` (scheduled) vs `AMT_PAYMENT` (actual),
+  `DAYS_INSTALMENT` (due) vs `DAYS_ENTRY_PAYMENT` (paid) → late/underpayment ratios.
+- `credit_card_balance` (132 MB) — `AMT_BALANCE`/`AMT_CREDIT_LIMIT_ACTUAL`, `SK_DPD`/`SK_DPD_DEF`.
+- `pos_cash_balance` (25.7 MB) — `CNT_INSTALMENT`, `SK_DPD`/`SK_DPD_DEF`.
+- `bureau_balance` (12.4 MB) stays Bronze — external-bureau status via a DIFFERENT join path
+  (`SK_ID_BUREAU`→`bureau`), different story, not part of HC-1. Only 3 of 4 child tables promote.
+- **Join path to identity** (same as `fact_loan_application`): child `SK_ID_CURR` →
+  `dim_customer_xwalk` (`source_system='home_credit'`, `native_key=SK_ID_CURR`) → `customer_id`.
+- **THE risk to design around**: installment→customer is 1:N. Aggregate at native grain, join at
+  customer grain — the exact BQ-04 fan-out bug class. This is WHY the first step is a staff-DE
+  grain ruling, not a builder. Proposed (pending that ruling): `fact_installments` (native grain)
+  + `mart_repayment_risk` (customer grain, the BQ-11 answer, a dbt view like BQ-01..08).
+- This is REAL data used as-is — ZERO fabrication. Passes the owner's data-authenticity bar (below).
+
+**CANCELLED — OBP, permanently.** Sampled the real OBP sandbox data this session: it is synthetic
+JUNK (account_ids `MyAcc9821`/`rbs-sara`, descriptions `Coffee`/`food`/`Brazil`, mirror +1/−1
+test txns, 35 KB / ~549 rows total). Developers poking a public sandbox, not real economic
+activity. OBP stays Silver-terminal (ADR-005 Add #2) — and the data-quality reason is now even
+stronger than the identity reason. Do NOT revisit OBP-to-Gold.
+
+**LEFT AS-IS (owner's call) — BQ-02 (PaySim) and BQ-03 (CRM).** The owner clarified the real
+data-authenticity bar, which now governs all future scope: **a pre-existing PUBLISHED dataset that
+happens to be synthetic (PaySim on Kaggle) is FINE — we didn't fabricate it. What is NOT ok is US
+creating synthetic rows/columns/tables ourselves to make a BQ answerable.** Under that bar:
+- BQ-02/PaySim = published synthetic, acceptable, keep.
+- BQ-03/CRM = WE fabricated it (`seed/salesforce/load_berka.py::_generate_cases`, 15% of contacts
+  get a random Case) because no real source had CRM tickets; produces a meaningless `0.0%`. It is
+  the one genuine violation of the bar and the weakest BQ. **Owner chose to LEAVE it for now, not
+  delete** — plan is to later add a NEW pipeline/source with REAL Kaggle data related to BQ-02's
+  fraud story to replace the self-generated synthetic. Not this session's work.
+- Minor gray area noted, not actioned: `dim_fx_rate` rates are illustrative/hand-set (a small
+  reference table), not real market rates.
+
+**Governance state for HC-1 (a NEW BQ → expands the locked 10 → 11):**
+- `@finops` (from session 11) already covers dbt/Snowflake warehouse; a new paid Databricks run
+  for the HC-1 builds needs a fresh finops nod (small).
+- `governance/BACKLOG.md` has a scope-guardian DEFERRAL (2026-07-18) for "promote the 4 HC tables
+  Bronze→Silver, no BQ." Its own revisit-trigger (a) — "a future BQ that needs `installments_
+  payments`/`credit_card_balance`" — is now met by HC-1/BQ-11, and the owner authorized proceeding.
+  So next session: run the `@scope-guardian` sign-off, which SUPERSEDES that deferral row (log it
+  as owner-authorized, dated, per the established override pattern — don't silently edit).
+
+**Immediate next steps, in order (do NOT reorder — same discipline as prior sessions):**
+1. `@staff-data-engineer` grain ruling — exact new Gold table(s), grains, SCD, which Silver
+   builders, how the mart aggregates without fan-out, whether the mart is a dbt view. (Runs on
+   Opus by its own config even if the main session is Sonnet.)
+2. `@scope-guardian` sign-off on BQ-11 (owner already authorized — record as the override that
+   supersedes the BACKLOG deferral).
+3. Write the docs BEFORE any builder (scope-guardian's standing condition): ADR-005 Addendum #5,
+   new BQ-11 row in `journey/02_BUSINESS_QUESTIONS.md`, new grains in `journey/04_DATA_MODEL.md`,
+   STTM in `journey/05`.
+4. Build 3 new Silver builders (`sil_installments_payments`, `sil_credit_card_balance`,
+   `sil_pos_cash_balance`) — Bronze→Silver conformance + DQ, local-verify free first.
+5. Build the HC-1 Gold fact + mart per the grain ruling, local-verify free.
+6. `@finops` nod → ONE paid Databricks run → artifact-verify vs S3 (per ADR-009, never trust job
+   SUCCESS alone).
+7. Wire into serving: new Snowflake external table(s) (external table #13+), new dbt mart, `dbt
+   build` green, reconcile.
+8. Finish: `journey/08` evidence, orchestration (`orchestrate_config.yml` + `databricks.yml`),
+   compaction (customer-keyed fact gets ZORDER), PR to main.
+
+**Fixed environment constraints (don't re-discover each session):** Bash is hard-blocked from ALL
+`iam.*` boto3 calls incl. read-only — AWS IAM work needs the owner's console. Local Spark needs
+`JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64`. Snowflake `TABLE_FORMAT=DELTA` external tables
+REJECT `PARTITION_TYPE`/`PARTITION BY` — declare partition cols as ordinary `value:col::type`.
+`pyarrow` reads of big S3 parquet can segfault at process-exit (harmless, after output prints).
+
+**Uncommitted at save time:** `governance/BACKLOG.md` (scope-guardian's HC deferral row — kept,
+committed with this checkpoint) and `docs/ai-etl-governance-notes.md` (pre-existing, untracked,
+NOT from this work — leave it). Branch `feat/dbt-marts-gold-promotion` is already merged (PR #13);
+**start HC-1 on a fresh branch off `main`** (e.g. `feat/bq-11-home-credit-repayment`).
+
+---
+
+
 **2026-07-18 (eleventh session) — ✅✅✅ dbt-on-Snowflake serving layer BUILT, DEPLOYED, AND
 VERIFIED end-to-end. All 5 ordered steps from the prior checkpoint done, plus a real mid-build
 governance escalation (6/8 marts needed Silver data — resolved via 5 new Gold tables, not a

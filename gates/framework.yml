@@ -19,13 +19,19 @@ paths:
     - "pipeline/"
     - "docs/"
 
-  # Where transform models live, for model-name drift checks. No dbt here (D-01 Add #3 —
-  # Databricks portable PySpark + Delta is the transform engine, not dbt); "models" = the
-  # Silver/Gold PySpark table-builder scripts, one file per table/mart.
+  # Where transform models live, for model-name drift checks. "models" = the Silver/Gold
+  # PySpark table-builder scripts (pipeline/) PLUS dbt SQL mart models (dbt/) — dbt was
+  # adopted 2026-07-17 as the sole authoring layer for BQ-01..08's analytics marts
+  # (governance/plans/PLAN-dbt-marts-serving-layer.md; comment here previously said "no dbt",
+  # stale since that adoption — retired pipeline/gold/mart_*.py files still exist on disk for
+  # git history, which is why the gate kept passing for those 8 marts even though this glob
+  # never covered dbt; a dbt-only mart with no retired .py twin, e.g. mart_repayment_risk
+  # (ADR-005 Add #5), needs the dbt glob to resolve at all).
   dbt_root: "pipeline"
   model_globs:
     - "pipeline/silver/**/*.py"
     - "pipeline/gold/**/*.py"
+    - "dbt/models/marts/*.sql"
   snapshot_globs: []
 
 journey:

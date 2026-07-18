@@ -2,7 +2,10 @@
 
 > Content source: `04_BUSINESS_QUESTIONS.md` in the planning lab. These 10 questions ARE the
 > entire scope of Gold — any mart not answering one of them is scope creep (`@scope-guardian`
-> hard veto, `governance/BACKLOG.md`).
+> hard veto, `governance/BACKLOG.md`). **BQ-11 (below) is the one exception**: an owner-authorized
+> 11th question, added 2026-07-18 via `governance/ADR/ADR-000-feature-intake-protocol.md` +
+> `@staff-data-engineer` grain ruling + `@scope-guardian` sign-off (`governance/BACKLOG.md`
+> "Superseded deferrals") — not a silent scope expansion, a governed one.
 
 ## North-star question
 "Across four disjoint banking systems that were never designed to share a key, can we produce one
@@ -23,6 +26,7 @@ source system only sees its own slice.
 | BQ-08 | Liquidity view — total deposits, daily net flow | total deposits, daily in/out, net flow trend | `mart_daily_flows` exists; query returns daily trend | P1 |
 | BQ-09 | Spending behaviour — txn type/value distribution by segment/month | txn count/value by type × segment × month | query against `fact_txn` × `dim_customer` returns the distribution | P2 |
 | BQ-10 | Can we trust the numbers? — source freshness, DQ failures, source→Gold reconciliation | last-refresh per source, DQ fail count yesterday, row-count reconciliation delta | `mart_pipeline_health` exists (mandatory, non-optional); query returns freshness+reconciliation | P0 |
+| BQ-11 | Repayment discipline vs default (HC-1) — does a customer's ACTUAL repayment behavior (late-payment %, underpayment %, days-past-due across `installments_payments`/`credit_card_balance`/`pos_cash_balance`) predict their Home Credit `TARGET` default? Extends BQ-05's demographic risk view with a behavioral signal. | late-payment rate, underpayment rate, avg days late, CC months-in-DPD, CC avg utilization, POS months-in-DPD, max DPD — all at customer grain, joined to `target_default` | `mart_repayment_risk` exists (dbt view); one runnable query returns behavioral metrics + default flag per customer | P2 |
 
 Segment definitions (income band, "dormant X days," "healthy" deposit balance) are set once in
 `journey/03_DATA_REQUIREMENTS.md` — not reinvented per mart.
@@ -36,8 +40,9 @@ Named REJECTED items (`01_OPUS_DECISIONS.md` REJECTED list, binding — not a "m
 4. ML model training (a fraud-detection or default-prediction model) — `isFraud` and the
    default-risk fields are labels this pipeline SERVES, never trains against.
 5. Real-time streaming/CDC (Fasa C territory, not v1 — D-02).
-6. Any mart beyond BQ-01…10. A new mart idea mid-build goes through
-   `governance/ADR/ADR-000-feature-intake-protocol.md`, not straight into `pipeline/gold/`.
+6. Any mart beyond BQ-01…11 (BQ-11 added 2026-07-18, governed — see note above). A new mart idea
+   mid-build goes through `governance/ADR/ADR-000-feature-intake-protocol.md`, not straight into
+   `pipeline/gold/`.
 7. Terraform/IaC (D-13) — this repo's cloud footprint is 2–3 resources, hand-managed.
 8. Fabric/OneLake anywhere in this repo (D-01 Addendum #2) — separate project.
 

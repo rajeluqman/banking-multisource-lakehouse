@@ -18,6 +18,9 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `sil_crm_case` | one row per Salesforce Case (CRM ticket) | CRM support / fraud-follow-up ticket (ADR-006 Add #2 — resolves BQ-03's journey/03 L8 gap) | Silver |
 | `sil_obp_accounts` / `sil_obp_transactions` | one row per OBP account / transaction | Core banking account/transaction | Silver |
 | `sil_campaign_response` | one row per Teradata Bank Marketing record (post-xwalk-linkage) | Marketing/campaign response (ADR-006) | Silver |
+| `sil_installments_payments` | one row per scheduled installment per previous-application | Installment payment event (ADR-005 Add #5, BQ-11/HC-1) | Silver |
+| `sil_credit_card_balance` | one row per credit-card previous-application × month snapshot | CC monthly balance snapshot (ADR-005 Add #5, BQ-11/HC-1) | Silver |
+| `sil_pos_cash_balance` | one row per POS-cash previous-application × month snapshot | POS monthly balance snapshot (ADR-005 Add #5, BQ-11/HC-1) | Silver |
 | `dim_customer` | one row per bank-wide `customer_id` (golden record) | Customer | Gold |
 | `dim_date` | one row per calendar date | Date | Gold |
 | `dim_fx_rate` | one row per `currency_code` | FX reference rate (D-12, ADR-005 addendum #1, this session) | Gold |
@@ -29,6 +32,7 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `fact_previous_application` | one row per `SK_ID_PREV` | Prior loan application (ADR-005 Add #4 — promotes `sil_previous_application`, xwalk-resolved) | Gold |
 | `fact_account_balance` | one row per `account_id` | Account current-balance snapshot (ADR-005 Add #4 — materializes `latest_balance_per_account`) | Gold |
 | `bridge_customer_account` | one row per (`customer_id`, `account_id`) | Customer↔account N:N bridge (ADR-005 Add #4 — from `sil_disp`, xwalk-resolved; bridge not CTE) | Gold |
+| `fact_repayment_behavior` | one row per `customer_id` | Customer repayment-behavior profile (ADR-005 Add #5, BQ-11/HC-1 — consolidated fact: `sil_installments_payments`/`sil_credit_card_balance`/`sil_pos_cash_balance` each pre-aggregated to customer grain independently, THEN joined — fan-out-safe by construction, never join raw multi-row-per-customer sources to each other) | Gold |
 | `mart_customer_360` (BQ-01) | one row per customer_id | Customer relationship summary | Gold mart |
 | `mart_fraud_daily` (BQ-02) | one row per (date, transaction_type) | Fraud trend | Gold mart |
 | `mart_fraud_followup` (BQ-03) | one row per fraud event | Fraud SLA | Gold mart |
@@ -38,6 +42,7 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `mart_dormancy` (BQ-07) | one row per dormant customer_id per month | Dormancy | Gold mart |
 | `mart_daily_flows` (BQ-08) | one row per date | Liquidity | Gold mart |
 | `mart_pipeline_health` (BQ-10) | one row per (pipeline run, source) | Run metadata / reconciliation | Gold mart (mandatory) |
+| `mart_repayment_risk` (BQ-11) | one row per customer_id | Repayment behavior vs default (ADR-005 Add #5) | Gold mart (dbt view, joins `fact_repayment_behavior` × `fact_loan_application`, both customer-grain — no fan-out) |
 
 Exact `pipeline/silver/*.py` and `pipeline/gold/*.py` filenames are assigned in Fasa C/D as each
 table is built; this table is the pre-build contract each file must match (checked by
@@ -62,6 +67,10 @@ table is built; this table is the pre-build contract each file must match (check
   correct model for it is a NEW append-only fact_address_change event fact (grain: one row per
   observed address change per customer_id), NOT a Type 2 SCD on `dim_customer` (which stays Type 1);
   that capability + fact are pending `@scope-guardian` ADR-000 intake, so no such table exists in v1.
+  Also OUT (named, BQ-11/HC-1 scope, ADR-005 Add #5): **`bureau_balance`** — a 4th un-Silver'd Home
+  Credit child table, different join path (`SK_ID_BUREAU`→`bureau`, not `SK_ID_CURR`), not needed
+  for the customer-grain repayment-behavior signal; stays Bronze-only, its own
+  `governance/BACKLOG.md` deferral unaffected by BQ-11's authorization.
 
 ## ERD / diagram
 No `.dbml`/graphical ERD in v1 — the grain-declarations table above plus the join paths named in

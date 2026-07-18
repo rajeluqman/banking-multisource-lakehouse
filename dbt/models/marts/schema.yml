@@ -48,3 +48,9 @@ models:
     columns:
       - name: txn_date
         tests: [not_null, unique]
+
+  - name: mart_repayment_risk
+    description: "BQ-11/HC-1 — repayment discipline vs default (extends BQ-05's demographic risk with a behavioral signal). Grain: one row per customer_id (inner join of two already customer-grain sources, cannot fan out)."
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]

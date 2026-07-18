@@ -35,6 +35,7 @@ MAINTENANCE_TARGETS: list[tuple[str, tuple[str, ...]]] = [
     ("fact_previous_application", ("customer_id",)),
     ("fact_account_balance", ("account_id",)),
     ("bridge_customer_account", ("customer_id",)),
+    ("fact_repayment_behavior", ("customer_id",)),  # ADR-005 Add #5, BQ-11/HC-1
     ("dim_customer", ()),
     ("dim_customer_xwalk", ()),
     ("dim_campaign_response", ()),
