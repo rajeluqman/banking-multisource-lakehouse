@@ -9,10 +9,62 @@
   `pipeline/gold/` scripts or a notebook — read/write mechanism, not a UI.
 - **Canonical**: Databricks SQL / notebook queries against Unity-Catalog-governed Gold tables on
   the disposable trial, screenshotted (D-01 Add #3 evidence-first rule).
-- **Serving veneer (Fasa E, optional)**: Snowflake external tables over the Gold S3 prefix + one
-  Power BI page covering BQ-01 + BQ-02, or a DuckDB query if no live Snowflake account.
+- **Serving veneer — Fasa E, BUILT 2026-07-18 (was optional/not-started as of the 2026-07-17
+  entry below).** Two tiers, split by BQ, per `governance/plans/PLAN-dbt-marts-serving-layer.md` +
+  `governance/ADR/ADR-005-star-schema-gold-and-mdm-xwalk.md` Addendum #4:
+  - **BQ-01..08 (the 8 analytics marts)**: authored and served by **dbt-on-Snowflake**
+    (`dbt/models/marts/*.sql`), materialized as **views** in `ANALYTICS.DBT_MARTS`, reading
+    **only** the 12 read-only Snowflake external tables in `BANKING.GOLD_EXT`
+    (`pipeline/serving/snowflake_setup.sql`) — themselves a live, verified read-in-place mirror
+    of `s3://banking-lakehouse-pipeline/banking/gold/`, no physical copy. The 8
+    `pipeline/gold/mart_*.py` PySpark builders that used to author these are **retired from
+    orchestration** (source kept in git history) — dbt is now the sole authoring path.
+  - **BQ-09/BQ-10 + all facts/dims/bridges**: stay **S3/Spark** as before — dim/fact tables
+    (including the 5 new ADR-005 Add #4 promotions) are Spark-built Delta on S3;
+    `mart_pipeline_health` (BQ-10) stays Spark-native, deliberately excluded from dbt (pipeline
+    run/reconciliation metadata, not a BQ analytics aggregation). Evidence for these stays the
+    boto3/`_delta_log`/direct-read method documented in the 2026-07-17 section below.
+  - Power BI / DuckDB stays the documented optional next step on top of the Snowflake views;
+    not built this session (out of scope of the dbt cutover itself).
+
+## Per-BQ evidence (2026-07-18) — BQ-01..08 now served by dbt/Snowflake, reconciled against the retiring PySpark marts' 2026-07-17 real-scale numbers
+
+**Method**: `dbt build --project-dir dbt` against the live Snowflake trial (`DBT_WH` warehouse,
+`ANALYTICS.DBT_MARTS` target) — 39/39 (8 view models + 31 source/model tests) `PASS`, 0 errors.
+Each mart's live output was then queried directly and diffed against the exact numbers already
+recorded as **PROVEN** in the 2026-07-17 section below (the retiring PySpark marts' last real
+run) — not re-derived from a fresh assumption, a byte-for-byte reconciliation against a citation
+that already exists in this file. All 8 matched exactly or within float rounding; no discrepancy
+found. Full reconciliation trail: `governance/plans/PLAN-dbt-marts-serving-layer.md` Phase-2 row.
+
+| BQ | Mart | Query location | dbt/Snowflake output (2026-07-18) | Matches 2026-07-17 PySpark baseline? |
+|---|---|---|---|---|
+| BQ-01 | mart_customer_360 | `dbt/models/marts/mart_customer_360.sql` → `ANALYTICS.DBT_MARTS.mart_customer_360` | 4,462,220 rows; `CUST_BK_3441 txn_count=12 total_txn_value=1330100.801 product_count=1` | **YES**, exact |
+| BQ-02 | mart_fraud_daily | `dbt/models/marts/mart_fraud_daily.sql` | 62 rows; `2026-07-02 TRANSFER fraud_txn_count=158 fraud_txn_value=319264672.56` | **YES**, exact |
+| BQ-03 | mart_fraud_followup | `dbt/models/marts/mart_fraud_followup.sql` | `fraud_event_count=8213, within_sla_count=0, within_sla_pct=0.0` | **YES**, exact |
+| BQ-04 | mart_loan_funnel | `dbt/models/marts/mart_loan_funnel.sql` | `app_month=2026-07, application_count=307511, approval_rate_pct=62.6794, avg_days_to_decision=880.367039` | **YES**, exact (the fixed 307,511 — the fan-out bug was never re-introduced; dbt reads `fact_loan_application`'s native grain directly) |
+| BQ-05 | mart_risk_segment | `dbt/models/marts/mart_risk_segment.sql` | 307,511 rows | **YES**, exact |
+| BQ-06 | mart_cross_sell | `dbt/models/marts/mart_cross_sell.sql` | 6 rows; `CUST_BK_822 current_balance=15256.92 last_txn_ts=2026-01-12` | **YES**, exact |
+| BQ-07 | mart_dormancy | `dbt/models/marts/mart_dormancy.sql` | 285,264 rows | **YES**, exact |
+| BQ-08 | mart_daily_flows | `dbt/models/marts/mart_daily_flows.sql` | 469 rows; `2026-07-16 total_out=449703481.30 total_deposits_snapshot=1282397.59` | **YES**, exact |
+
+**ADR-005 Addendum #4 simplification, visible in the SQL itself**: `mart_risk_segment` and
+`mart_fraud_followup` no longer join through `dim_customer_xwalk` at all — `fact_loan_application`
+and `fact_crm_case` now carry `customer_id` directly (xwalk-resolved once, in the Spark builder),
+so the dbt SQL is a plain `customer_id` join instead of the old cast-string `SK_ID_CURR`/`client_id`
+hop. Same output, simpler join, one fewer place identity resolution could silently drift.
+
+**What this does NOT change**: BQ-09 and BQ-10 evidence (below) — untouched, still S3/Spark,
+still the 2026-07-17 artifact-verified numbers. dbt never touches `dim_customer_xwalk`, Silver, or
+masking (PLAN Step-1 red line) — verified by construction (`dbt/models/marts/sources.yml` lists
+only the 12 Gold external tables; no Silver source exists in the dbt project at all).
 
 ## Per-BQ evidence (2026-07-17, refreshed against REAL full-Kaggle-scale S3 Gold — 10/10 PROVEN)
+
+**Superseded for BQ-01..08 by the 2026-07-18 section above** (same numbers, different serving
+mechanism — dbt/Snowflake now authors them, not `pipeline/gold/mart_*.py`). Kept in full below as
+the historical record of the 3 real defects found and fixed, and as the still-current evidence for
+BQ-09/BQ-10 (S3/Spark, untouched by the dbt cutover).
 
 **Why this section exists**: the 2026-07-15 evidence below (kept further down, historical) was
 captured against a small D-14 dev-loop sample (e.g. `fact_txn` 20,750 rows total). Session 9
