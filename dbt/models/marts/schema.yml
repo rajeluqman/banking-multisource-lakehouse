@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: mart_customer_360
+    description: "BQ-01 — product count + total relationship value (MYR) per customer. Grain: one row per customer_id."
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+
+  - name: mart_fraud_daily
+    description: "BQ-02 — fraud txn count/value by date + type. Grain: one row per (date, transaction_type)."
+    columns:
+      - name: txn_date
+        tests: [not_null]
+
+  - name: mart_fraud_followup
+    description: "BQ-03 — % of fraud events with a CRM follow-up within 48h. Grain: single whole-population aggregate row (matches the retiring PySpark mart's groupBy() shape)."
+    columns:
+      - name: fraud_event_count
+        tests: [not_null]
+
+  - name: mart_loan_funnel
+    description: "BQ-04 — applications/month, approval-rate proxy, avg days to decision. Grain: one row per application month."
+    columns:
+      - name: app_month
+        tests: [not_null, unique]
+
+  - name: mart_risk_segment
+    description: "BQ-05 — default rate by income segment. Grain: one row per (customer_id, income_band, name_income_type)."
+    columns:
+      - name: customer_id
+        tests: [not_null]
+
+  - name: mart_cross_sell
+    description: "BQ-06 — cross-sell candidates (healthy deposit, active, no card/loan). Grain: one row per qualifying customer_id (can fan out for a multi-account customer, matches the retiring PySpark mart's behavior)."
+    columns:
+      - name: customer_id
+        tests: [not_null]
+
+  - name: mart_dormancy
+    description: "BQ-07 — customers with no txn in 90 days. Grain: one row per dormant customer_id per month."
+    columns:
+      - name: customer_id
+        tests: [not_null]
+
+  - name: mart_daily_flows
+    description: "BQ-08 — total deposits + daily net flow (MYR). Grain: one row per date."
+    columns:
+      - name: txn_date
+        tests: [not_null, unique]

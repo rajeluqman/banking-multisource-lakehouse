@@ -213,6 +213,91 @@ ALTER EXTERNAL TABLE dim_customer_xwalk REFRESH;
 ALTER EXTERNAL TABLE dim_date REFRESH;
 ALTER EXTERNAL TABLE dim_fx_rate REFRESH;
 
+-- ============================================================================
+-- HALF 3 (2026-07-18, ADR-005 Addendum #4) — the 5 new external tables over the Silver->Gold
+-- promotions (dim_campaign_response, fact_crm_case, fact_previous_application,
+-- fact_account_balance, bridge_customer_account). Column types pulled from the REAL deployed
+-- S3 _delta_log/00000000000000000000.json schemaString AFTER the Databricks deploy (ground
+-- truth) — NOT the local dev-loop fixture, which was caught carrying a stale pre-boolean-cast
+-- schema for campaign_response (credit_in_default/subscribed_term_deposit as string there vs
+-- boolean at real canonical scale — anti-shortcut protocol catch, 2026-07-18).
+-- ============================================================================
+
+CREATE OR REPLACE EXTERNAL TABLE dim_campaign_response (
+    customer_id               STRING  AS (value:customer_id::string),
+    job                       STRING  AS (value:job::string),
+    marital                   STRING  AS (value:marital::string),
+    education                 STRING  AS (value:education::string),
+    credit_in_default         BOOLEAN AS (value:credit_in_default::boolean),
+    avg_yearly_balance        BIGINT  AS (value:avg_yearly_balance::bigint),
+    prior_campaign_outcome    STRING  AS (value:prior_campaign_outcome::string),
+    subscribed_term_deposit   BOOLEAN AS (value:subscribed_term_deposit::boolean)
+)
+LOCATION = @BANKING_GOLD_STAGE/dim_campaign_response/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/dim_campaign_response (ADR-005 Add #4, grain: customer_id). credit_in_default/job/education stay confidential/risk-classified per journey/09 — scope grants to BQ-05/06-facing roles only.';
+
+CREATE OR REPLACE EXTERNAL TABLE fact_crm_case (
+    case_id        STRING AS (value:case_id::string),
+    customer_id    STRING AS (value:customer_id::string),
+    case_type      STRING AS (value:case_type::string),
+    opened_at      STRING AS (value:opened_at::string)
+)
+LOCATION = @BANKING_GOLD_STAGE/fact_crm_case/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/fact_crm_case (ADR-005 Add #4, grain: case_id).';
+
+CREATE OR REPLACE EXTERNAL TABLE fact_previous_application (
+    sk_id_prev             BIGINT AS (value:sk_id_prev::bigint),
+    customer_id            STRING AS (value:customer_id::string),
+    sk_id_curr             BIGINT AS (value:sk_id_curr::bigint),
+    name_contract_status   STRING AS (value:name_contract_status::string),
+    days_decision          BIGINT AS (value:days_decision::bigint)
+)
+LOCATION = @BANKING_GOLD_STAGE/fact_previous_application/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/fact_previous_application (ADR-005 Add #4, grain: sk_id_prev).';
+
+CREATE OR REPLACE EXTERNAL TABLE fact_account_balance (
+    account_id             STRING AS (value:account_id::string),
+    current_balance        DOUBLE AS (value:current_balance::double),
+    current_balance_myr    DOUBLE AS (value:current_balance_myr::double),
+    currency               STRING AS (value:currency::string)
+)
+LOCATION = @BANKING_GOLD_STAGE/fact_account_balance/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/fact_account_balance (ADR-005 Add #4, grain: account_id, current-balance snapshot).';
+
+CREATE OR REPLACE EXTERNAL TABLE bridge_customer_account (
+    customer_id     STRING AS (value:customer_id::string),
+    account_id      STRING AS (value:account_id::string),
+    relation_type   STRING AS (value:relation_type::string)
+)
+LOCATION = @BANKING_GOLD_STAGE/bridge_customer_account/
+FILE_FORMAT = (TYPE = PARQUET)
+TABLE_FORMAT = DELTA
+REFRESH_ON_CREATE = FALSE
+AUTO_REFRESH = FALSE
+COMMENT = 'Delta external table over banking/gold/bridge_customer_account (ADR-005 Add #4, grain: customer_id x account_id N:N bridge, not a CTE).';
+
+ALTER EXTERNAL TABLE dim_campaign_response REFRESH;
+ALTER EXTERNAL TABLE fact_crm_case REFRESH;
+ALTER EXTERNAL TABLE fact_previous_application REFRESH;
+ALTER EXTERNAL TABLE fact_account_balance REFRESH;
+ALTER EXTERNAL TABLE bridge_customer_account REFRESH;
+
 -- serving_ro role (journey/09_SECURITY_AND_ACCESS.md line 69) — Gold-only, read-only, Snowflake side.
 CREATE ROLE IF NOT EXISTS SERVING_RO;
 GRANT USAGE ON DATABASE BANKING TO ROLE SERVING_RO;

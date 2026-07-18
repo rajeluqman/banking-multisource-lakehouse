@@ -195,79 +195,14 @@ resources:
           spark_python_task:
             python_file: pipeline/gold/bridge_customer_account.py
             source: GIT
-        - task_key: mart_customer_360
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: dim_customer
-            - task_key: fact_txn
-            - task_key: fact_loan_application
-            - task_key: silver_marketing
-          spark_python_task:
-            python_file: pipeline/gold/mart_customer_360.py
-            source: GIT
-        - task_key: mart_cross_sell
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: dim_customer
-            - task_key: fact_loan_application
-            - task_key: fact_txn
-            - task_key: dim_customer_xwalk
-            - task_key: dim_fx_rate
-            - task_key: silver_marketing
-            - task_key: silver_crm
-          spark_python_task:
-            python_file: pipeline/gold/mart_cross_sell.py
-            source: GIT
-        - task_key: mart_daily_flows
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: fact_txn
-            - task_key: dim_fx_rate
-            - task_key: silver_crm
-          spark_python_task:
-            python_file: pipeline/gold/mart_daily_flows.py
-            source: GIT
-        - task_key: mart_dormancy
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: dim_customer
-            - task_key: fact_txn
-          spark_python_task:
-            python_file: pipeline/gold/mart_dormancy.py
-            source: GIT
-        - task_key: mart_fraud_daily
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: fact_card_fraud
-          spark_python_task:
-            python_file: pipeline/gold/mart_fraud_daily.py
-            source: GIT
-        - task_key: mart_fraud_followup
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: fact_card_fraud
-            - task_key: dim_customer_xwalk
-            - task_key: silver_crm
-          spark_python_task:
-            python_file: pipeline/gold/mart_fraud_followup.py
-            source: GIT
-        - task_key: mart_loan_funnel
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: silver_sales
-          spark_python_task:
-            python_file: pipeline/gold/mart_loan_funnel.py
-            source: GIT
-        - task_key: mart_risk_segment
-          existing_cluster_id: ${var.cluster_id}
-          depends_on:
-            - task_key: dim_customer_xwalk
-            - task_key: silver_sales
-            - task_key: silver_marketing
-            - task_key: fact_txn
-          spark_python_task:
-            python_file: pipeline/gold/mart_risk_segment.py
-            source: GIT
+        # 8 analytics-mart tasks (mart_customer_360, mart_cross_sell, mart_daily_flows,
+        # mart_dormancy, mart_fraud_daily, mart_fraud_followup, mart_loan_funnel,
+        # mart_risk_segment — BQ-01..08) RETIRED from this job 2026-07-18 (PLAN Phase 3,
+        # governance/plans/PLAN-dbt-marts-serving-layer.md). dbt now owns sole authoring:
+        # Snowflake views over BANKING.GOLD_EXT, dbt/models/marts/*.sql. Reconciled against
+        # each builder's last real S3 output before removal — every number matched exactly or
+        # within float rounding (PLAN Phase-2 row has the full evidence). Source .py files
+        # kept in git history, not deleted, for reversibility.
         - task_key: mart_pipeline_health
           existing_cluster_id: ${var.cluster_id}
           depends_on:
@@ -278,6 +213,25 @@ resources:
             - task_key: silver_core_banking
           spark_python_task:
             python_file: pipeline/gold/mart_pipeline_health.py
+            source: GIT
+        # ---- Gold table maintenance (ADR-010 decision 2, closes R-41) ----
+        - task_key: compaction
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: fact_txn
+            - task_key: fact_card_fraud
+            - task_key: fact_loan_application
+            - task_key: fact_crm_case
+            - task_key: fact_previous_application
+            - task_key: fact_account_balance
+            - task_key: bridge_customer_account
+            - task_key: dim_customer
+            - task_key: dim_customer_xwalk
+            - task_key: dim_campaign_response
+            - task_key: dim_date
+            - task_key: dim_fx_rate
+          spark_python_task:
+            python_file: pipeline/gold/compaction.py
             source: GIT
 
       # @finops condition (2026-07-17 Gold sign-off): explicit hard backstop given this repo

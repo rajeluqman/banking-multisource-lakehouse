@@ -1,0 +1,23 @@
+# Committed on purpose — no literal secret anywhere (env_var() only), same pattern as
+# databricks.yml's host/token resolution. Point dbt at this file with
+# `--profiles-dir dbt/` (or `DBT_PROFILES_DIR=dbt`) rather than `~/.dbt/profiles.yml`, so the
+# profile travels with the repo instead of living in an untracked home directory.
+banking_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: ACCOUNTADMIN
+      # @finops sign-off (2026-07-18, PLAN-dbt-marts-serving-layer.md): X-Small, 60s
+      # auto-suspend, resource-monitor-gated — see pipeline/serving/snowflake_setup.sql.
+      warehouse: DBT_WH
+      # ANALYTICS.DBT_MARTS — the dedicated non-authoritative schema named in ADR-002's
+      # addendum. Views only (dbt_project.yml) over the BANKING.GOLD_EXT external tables —
+      # never a physical copy of Gold.
+      database: ANALYTICS
+      schema: dbt_marts
+      threads: 4
+      client_session_keep_alive: false

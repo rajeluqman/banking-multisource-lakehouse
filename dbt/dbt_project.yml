@@ -1,0 +1,22 @@
+name: banking_lakehouse_marts
+version: "1.0.0"
+config-version: 2
+
+profile: banking_lakehouse
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_packages"]
+
+# BINDING per PLAN-dbt-marts-serving-layer.md staff-DE ruling (2026-07-17, condition #1):
+# dbt marts are VIEWS by default — a table only where a specific view is provably too slow,
+# justified per-model (none has needed that yet; all 8 stay views). Views are DDL, not a
+# second physical copy of Gold — S3 stays sole physical truth (ADR-002).
+#
+# No `+schema:` override here on purpose — dbt's default custom-schema behavior appends the
+# custom schema to the profile's base schema (e.g. "DBT_MARTS_marts"), which would drift from
+# the exact `ANALYTICS.DBT_MARTS` schema named in ADR-002's addendum. The profile's `schema:`
+# (profiles.yml) IS `dbt_marts` directly, so models land in ANALYTICS.DBT_MARTS unmodified.
+models:
+  banking_lakehouse_marts:
+    marts:
+      +materialized: view
