@@ -1,0 +1,70 @@
+version: 2
+
+# dbt's ONLY sources — read-only Snowflake external tables over the Gold S3 prefix
+# (pipeline/serving/snowflake_setup.sql). NO physical copy into Snowflake (ADR-002 addendum,
+# PLAN-dbt-marts-serving-layer.md Q2) — S3 stays sole physical truth. 7 original facts/dims +
+# 5 promoted from Silver (ADR-005 Addendum #4, 2026-07-18) so dbt never touches Silver or
+# dim_customer_xwalk directly — identity resolution stays single-path in Spark.
+sources:
+  - name: gold
+    database: BANKING
+    schema: GOLD_EXT
+    tables:
+      # ---- Original 7 (verified 2026-07-18, row counts match S3 baselines exactly) ----
+      - name: fact_txn
+        description: One row per transaction (any source, unioned + conformed, amounts in MYR via amount_myr).
+        columns:
+          - name: txn_id
+            tests: [not_null]
+          - name: customer_id
+            tests: [not_null]
+      - name: fact_card_fraud
+        description: One row per PaySim transaction flagged isFraud=1.
+        columns:
+          - name: txn_id
+            tests: [not_null, unique]
+      - name: fact_loan_application
+        description: One row per Home Credit application.
+        columns:
+          - name: sk_id_curr
+            tests: [not_null, unique]
+      - name: dim_customer
+        description: Golden customer record (Type 1 SCD).
+        columns:
+          - name: customer_id
+            tests: [not_null, unique]
+      - name: dim_customer_xwalk
+        description: MDM crosswalk, one row per (customer_id, source_system). dbt reads this ONLY as a source, never re-derives identity.
+      - name: dim_date
+        description: One row per calendar date.
+        columns:
+          - name: date_key
+            tests: [not_null, unique]
+      - name: dim_fx_rate
+        description: D-12 static FX seed, one row per currency_code.
+        columns:
+          - name: currency_code
+            tests: [not_null, unique]
+      # ---- ADR-005 Addendum #4 promotions (2026-07-18) ----
+      - name: dim_campaign_response
+        description: Teradata Bank Marketing response, promoted to Gold so dbt never reads Silver. Confidential/risk-classified columns (credit_in_default, job, education) stay restricted to BQ-05/06-facing roles per journey/09.
+        columns:
+          - name: customer_id
+            tests: [not_null, unique]
+      - name: fact_crm_case
+        description: Salesforce Case, promoted to Gold, xwalk-resolved to customer_id in the Spark builder.
+        columns:
+          - name: case_id
+            tests: [not_null, unique]
+      - name: fact_previous_application
+        description: Home Credit prior-loan population (distinct from fact_loan_application's current-application grain), promoted to Gold.
+        columns:
+          - name: sk_id_prev
+            tests: [not_null, unique]
+      - name: fact_account_balance
+        description: Current-balance snapshot per Berka account, promoted to Gold (materializes latest_balance_per_account).
+        columns:
+          - name: account_id
+            tests: [not_null, unique]
+      - name: bridge_customer_account
+        description: Customer<->account N:N bridge table (not a CTE — journey/04), promoted to Gold.

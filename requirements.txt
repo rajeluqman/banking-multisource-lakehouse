@@ -17,6 +17,8 @@ boto3>=1.34                  # AWS S3 (sole source of truth, ADR-002) + cross-cl
                              # Databricks cluster (read+write, since UC-over-S3 is read-only on
                              # Azure — ADR-002 Add #2)
 snowflake-connector-python>=3.12  # Snowflake serving veneer (Fasa E, optional — ADR-002)
+dbt-snowflake>=1.8           # dbt-on-Snowflake analytics-marts layer (governance/plans/
+                             # PLAN-dbt-marts-serving-layer.md, ADR-002 addendum, ADR-005 Add #4)
 databricks-sdk>=0.30         # Databricks control plane (cluster start/stop, UC catalog listing)
 kaggle>=1.6                  # Seed-time dataset download (Home Credit / PaySim)
 

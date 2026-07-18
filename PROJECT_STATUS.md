@@ -2,6 +2,75 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-18 (eleventh session) — ✅✅✅ dbt-on-Snowflake serving layer BUILT, DEPLOYED, AND
+VERIFIED end-to-end. All 5 ordered steps from the prior checkpoint done, plus a real mid-build
+governance escalation (6/8 marts needed Silver data — resolved via 5 new Gold tables, not a
+security-boundary violation) that wasn't visible until the port actually started. PR #13 open
+against main. Nothing left open from this session's own scope.**
+
+**What's live now (all real, all independently verified — not "should work"):**
+1. **`@finops` cost sign-off** — X-Small `DBT_WH`, 60s auto-suspend, resource monitor (low
+   credit quota, suspend-at-100%), 300s statement timeout. Recorded in
+   `governance/plans/PLAN-dbt-marts-serving-layer.md`.
+2. **12 Snowflake external tables** over Gold S3 (`BANKING.GOLD_EXT`,
+   `pipeline/serving/snowflake_setup.sql`) — the original 7 facts/dims PLUS 5 new ones (next
+   item). Storage integration + IAM role trust (owner did the AWS console step, this session's
+   sandbox cannot touch IAM at all — even read-only `iam:GetRole` is classifier-blocked).
+   Live-tested finding recorded in the SQL file: `TABLE_FORMAT = DELTA` external tables reject
+   `PARTITION_TYPE`/`PARTITION BY` outright (contradicts the Snowflake docs example) — omit
+   them, partition columns just become ordinary `value:col::type` columns and still resolve
+   correctly. All 12 row counts verified against real S3 baselines.
+3. **ADR-005 Addendum #4 — 5 new Gold tables**, NOT in the original plan. Mid-port discovery:
+   6 of the 8 PySpark marts read Silver directly (`campaign_response`, `crm_case`,
+   `previous_application`, `disp`, `trans`) — exposing those to Snowflake would have violated
+   `journey/09_SECURITY_AND_ACCESS.md`'s locked `serving_ro = Gold-only` boundary.
+   `@staff-data-engineer` vetoed exposing Silver and ruled the fix: promote what's needed into
+   Gold instead (`dim_campaign_response`, `fact_crm_case`, `fact_previous_application`,
+   `fact_account_balance`, `bridge_customer_account`). `@scope-guardian` approved the build
+   volume as debt-paydown under the already-locked BQ scope, no fresh ADR-000 needed. Built,
+   deployed via Databricks (job `386754496413121`), artifact-verified against S3 (grain
+   uniqueness + row counts) — see `governance/ADR/ADR-005-star-schema-gold-and-mdm-xwalk.md`
+   Addendum #4 and `journey/04_DATA_MODEL.md` for the 5 new grain declarations.
+4. **dbt scaffold** (`dbt/`) — `dbt-snowflake` adapter, `profiles.yml` (env-var creds, safe to
+   commit), `sources.yml` over the 12 external tables, 8 mart models as **views** (per the
+   binding staff-DE condition) in `ANALYTICS.DBT_MARTS`, `schema.yml` tests. `dbt build`:
+   39/39 PASS (8 views + 31 source/model tests), 0 errors.
+5. **Reconciliation (PLAN Phase 2 gate) — all 8 marts match exactly or within float rounding**
+   against the retiring PySpark marts' last real S3 numbers (`journey/08`'s 2026-07-17 table):
+   BQ-01 4,462,220 rows; BQ-02 62 rows; BQ-03 fraud_event_count=8213; BQ-04
+   application_count=307511 (the fixed number, fan-out bug not re-introduced); BQ-05 307,511
+   rows; BQ-06 6 rows; BQ-07 285,264 rows; BQ-08 469 rows, total_deposits_snapshot=1282397.59.
+6. **8 PySpark mart builders retired from orchestration** (`databricks.yml`,
+   `pipeline/orchestrate_config.yml` — commented out, source kept in git history) and **the 8
+   now-orphaned S3 mart Delta tables physically dropped** (117 objects across 8 prefixes,
+   owner-confirmed before deletion). `mart_pipeline_health` (BQ-10) untouched, stays
+   Spark-native. All 4 governance gates green throughout; `databricks bundle validate` OK.
+7. **ADR-010 compaction stage** (`pipeline/gold/compaction.py`) — Delta `OPTIMIZE` +
+   `ZORDER BY customer_id`, closes R-41. Verified locally (free run) then for real on
+   Databricks (job `456069514400579`, run `875596646367957`, `result_state=SUCCESS`).
+   Artifact-verified via `_delta_log`: real `OPTIMIZE` commit, `zOrderBy=["customer_id"]`,
+   `fact_txn` live file count 87→65 (reconstructed from add/remove actions).
+8. **`journey/08_SERVING_AND_EVIDENCE.md`** updated with the per-BQ evidence split (BQ-01..08
+   → dbt/Snowflake, BQ-09/10 + facts/dims → S3/Spark) — the plan's own completion condition.
+
+**PR #13 open** (`feat/dbt-marts-gold-promotion` → `main`) — 3 commits, not yet merged (owner's
+call). Contains: the Snowflake external-table setup, ADR-005 Add #4's 5 new Gold builders, the
+full dbt project, orchestration retirement, and the compaction stage.
+
+**A real environment constraint worth remembering**: this sandbox's Bash tool is hard-blocked
+from ALL `iam.*` boto3 calls, including read-only ones (`iam:GetRole`) — not just mutating calls.
+Any future AWS IAM work (new storage integrations, role trust edits) needs the owner to do the
+AWS console/CLI step directly; don't spend time re-probing this each session, it's a fixed
+constraint, not a permissions prompt that might get approved.
+
+**Next session — nothing outstanding from this session's own scope.** Candidates, none blocking:
+1. Merge PR #13 to main (owner's call, not done automatically).
+2. Power BI / DuckDB page on top of the new Snowflake views — still optional, per journey/08.
+3. The pre-existing items from the 2026-07-17 checkpoint below remain: local smoke-DAG (KIV'd,
+   needs ADR-000 first), the 4 un-Silver'd Home Credit tables (locked scope, no BQ needs them).
+
+---
+
 **2026-07-17 (tenth session, continued) — ✅ dbt-on-Snowflake serving layer taken through FULL
 governance (ADR-000 intake → staff-DE technical ruling → scope-guardian scope ruling → owner
 override, explicitly recorded) + ADR-010 written (lakehouse maturity: compaction now, Iceberg

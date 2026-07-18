@@ -122,8 +122,21 @@ edit — see `governance/BACKLOG.md`'s "Superseded deferrals" table. Owner weigh
 judged dbt's portfolio skill-demonstration value (distinct, heavily-demanded, not otherwise shown
 in this PySpark-only repo) to outweigh the rework cost. `@staff-data-engineer`'s conditional
 technical ruling (views-only, external-tables-only/no physical copy, `mart_pipeline_health`/BQ-10
-excluded) stands as the binding design for the build. **`@finops` cost sign-off (warehouse size +
-auto-suspend) still required before any Snowflake compute spend — next step.**
+excluded) stands as the binding design for the build.
+
+**`@finops` cost sign-off (2026-07-18): APPROVED, with guardrails.** Warehouse: **X-Small**, no
+larger justified (single dev, no concurrency, largest scan `fact_txn` ~6.36M rows is trivial for
+XS; views cost nothing at DDL time, only at query time). **Auto-suspend: 60s, auto-resume: ON**
+(bursty ad-hoc dev-loop work, not kept-warm). Required guardrails before any `dbt build` runs:
+(1) a **resource monitor** with a low single-digit monthly credit quota, notify at 75%,
+**suspend-and-require-owner-action at 100%** (the real backstop given finite trial credits and
+this project's prior Databricks cost incidents); (2) `STATEMENT_TIMEOUT_IN_SECONDS=300` as a
+runaway-query guard; (3) **single-cluster warehouse, no multi-cluster** (no concurrency need);
+(4) **re-review trigger**: this approval covers views-only — if any of the 8 models later needs
+to become a derived TABLE (per staff-DE's per-model exception), that specific model returns to
+finops before materializing, not silently absorbed under this sign-off. Roster note: Snowflake
+compute is now a real metered cost for this project (alongside Databricks/Kaggle) — `@finops`
+stays on the roster.
 
 ---
 
@@ -147,9 +160,18 @@ auto-suspend) still required before any Snowflake compute spend — next step.**
 
 | Phase | Output | Validation gate | Status |
 |---|---|---|---|
-| 1 | `@scope-guardian` scope sign-off; `@finops` warehouse-size + auto-suspend policy | Plan Step 3 `@scope-guardian` line filled; finops policy recorded | pending |
-| 2 | ADR-002 addendum committed; `dbt-snowflake` project scaffolded (`dbt_project.yml`, `profiles.yml`, `sources.yml` over the 7 external tables); 8 dbt mart models (views) authored + `dbt test` (not_null/unique on keys) + `dbt docs`; journey/08 per-BQ evidence split recorded | `dbt build` green; each dbt mart's output reconciles to its retiring PySpark mart's current S3 numbers BEFORE the PySpark builder is removed | not started |
-| 3 | Retire the 8 `pipeline/gold/mart_*.py` builders from orchestration (`databricks.yml`/`orchestrate_config.yml`) + DoD; drop the 8 S3 mart tables ONLY after Phase-2 reconciliation passes | 4 gates green; `mart_pipeline_health` still Spark-built and reconciling; one Databricks run confirms the 8 removed tasks are gone cleanly | not started |
+| 1 | `@scope-guardian` scope sign-off; `@finops` warehouse-size + auto-suspend policy | Plan Step 3 `@scope-guardian` line filled; finops policy recorded | **done** (2026-07-18) |
+| 1b | **ADR-005 Addendum #4 (2026-07-18) — 5 new Gold objects so dbt reads Gold-only, never Silver.** Discovered mid-build: 6/8 marts read Silver directly (security-boundary conflict). `@staff-data-engineer` vetoed exposing Silver, ruled Option B (promote to Gold); `@scope-guardian` approved the volume as debt-paydown (no fresh ADR-000). 5 new Spark builders + `sources.yml` grows 7→12 external tables (all still Gold). | ADR-005 Add #4 committed + `journey/04_DATA_MODEL.md` grains added BEFORE builders; 5 new Gold tables deployed + verified vs S3; 5 new external tables created + row-count verified | **in progress** (2026-07-18) |
+| 2 | ADR-002 addendum committed; `dbt-snowflake` project scaffolded (`dbt/dbt_project.yml`, `dbt/profiles.yml`, `dbt/models/marts/sources.yml` over the **12** external tables); 8 dbt mart models (views) authored + `dbt test` (not_null/unique on keys) + `dbt docs`; journey/08 per-BQ evidence split recorded | `dbt build` green (**verified 2026-07-18: 39/39 PASS, 8 views created**); each dbt mart's output reconciles to its retiring PySpark mart's current S3 numbers BEFORE the PySpark builder is removed (**verified 2026-07-18: all 8 marts match exactly** — BQ-01 4,462,220 rows + `CUST_BK_3441` txn_count=12/total_txn_value=1330100.80; BQ-02 62 rows + 2026-07-02 TRANSFER fraud_txn_count=158; BQ-03 fraud_event_count=8213; BQ-04 application_count=307511/approval_rate_pct=62.68; BQ-05 307,511 rows; BQ-06 6 rows + `CUST_BK_822` current_balance=15256.92; BQ-07 285,264 rows; BQ-08 469 rows + 2026-07-16 total_out=449,703,481.30/total_deposits_snapshot=1,282,397.59 — every number cited in journey/08's 2026-07-17 evidence table reproduced bit-for-bit or within float rounding) | **done** (2026-07-18) |
+| 3 | Retire the 8 `pipeline/gold/mart_*.py` builders from orchestration (`databricks.yml`/`orchestrate_config.yml`) + DoD; drop the 8 S3 mart tables ONLY after Phase-2 reconciliation passes | 4 gates green; `mart_pipeline_health` still Spark-built and reconciling; one Databricks run confirms the 8 removed tasks are gone cleanly | **done** (2026-07-18) — orchestration retirement: all 4 gates green, `databricks bundle validate` OK, `mart_pipeline_health` unaffected. S3 table drop: owner explicit go-ahead given, 117 objects deleted across the 8 `banking/gold/mart_*` prefixes (`mart_customer_360`=22, `mart_cross_sell`=14, `mart_daily_flows`=13, `mart_dormancy`=22, `mart_fraud_daily`=10, `mart_fraud_followup`=10, `mart_loan_funnel`=7, `mart_risk_segment`=19). S3 is now sole-authoritative for these 8 via `ANALYTICS.DBT_MARTS` views only. Builder `.py` source stays in git history — reversibility per the plan's rollback section is unaffected. |
+
+**ADR-010 compaction (independent workstream, ran in parallel per that ADR's own sequencing)**:
+`pipeline/gold/compaction.py` built, locally verified (free run, 0 errors), wired into both
+`pipeline/orchestrate_config.yml` and `databricks.yml`, then run for real on the canonical
+Databricks job (`job_id=456069514400579`, scoped `only=["compaction"]`, `run_id=875596646367957`,
+`result_state=SUCCESS`). Artifact-verified per ADR-009 (never trust job SUCCESS alone): `fact_txn`'s
+`_delta_log` shows a real `OPTIMIZE` commit with `zOrderBy=["customer_id"]`, live file count 87→65
+(reconstructed from add/remove actions, tombstones excluded) — closes R-41.
 
 ## Rollback
 Corrected per the retire ruling (the original "additive, DROP SCHEMA only" claim was wrong under

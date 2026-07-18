@@ -167,3 +167,67 @@ it does not reverse or amend D-14 itself.
   `mart_risk_segment`, `mart_pipeline_health`). All must be rebuilt and re-verified after the
   artifact lands — tracked in `journey/08_SERVING_AND_EVIDENCE.md`'s BQ-09 evidence row, cost
   routed through `@finops-agent` before the redeploy.
+
+**Addendum #4 (2026-07-18, @staff-data-engineer model ruling + @scope-guardian volume sign-off) —
+five NEW conformed Gold objects promote the Silver data the analytics marts consume, so the
+dbt-on-Snowflake serving layer reads Gold ONLY, never Silver.** This is medallion-debt paydown
+under ADR-003/ADR-005 completing the already-locked BQ-01..10 scope — NOT a new mart, NOT a new
+BQ, NOT a security-boundary move. It closes a real latent smell surfaced by building the dbt
+serving layer (`governance/plans/PLAN-dbt-marts-serving-layer.md`): 6 of the 8 analytics marts,
+as authored in Spark, reach past Gold directly into Silver tables (`mart_customer_360`→
+`sil_campaign_response`; `mart_fraud_followup`→`sil_crm_case`; `mart_loan_funnel`→`sil_application`
++`sil_previous_application`; `mart_risk_segment`→`sil_application`+`sil_campaign_response`;
+`mart_cross_sell`→`sil_campaign_response`+`sil_disp`+`sil_trans`; `mart_daily_flows`→`sil_trans`).
+Spark tolerates cross-layer reads; a Snowflake serving role cannot (`journey/09_SECURITY_AND_
+ACCESS.md` line 53 "no analyst-facing role reading Silver directly", line 69 "`serving_ro` =
+Gold external tables only"), and the specific Silver columns carry confidential/risk
+classification (`journey/09_SECURITY_AND_ACCESS.md` lines 40-41: `credit_in_default`,
+`job`/`marital`/`education`).
+
+- **The vetoed alternative (recorded so it is not silently re-proposed):** exposing those 5 Silver
+  tables as Snowflake external tables was VETOED by `@staff-data-engineer` — it would institutionalize
+  the medallion layer-skip AND hand `serving_ro` row-level confidential/risk data, the exact
+  PII-to-wrong-role threat `journey/09_SECURITY_AND_ACCESS.md` line 114 exists to prevent. The
+  security boundary does not
+  move; the data moves up to Gold where serving is allowed to read it.
+
+- **The five new objects (grain / SCD / source):**
+  1. `dim_campaign_response` — one row per `customer_id`; **Type 1 overwrite**; promoted 1:1 from
+     `sil_campaign_response` (already 1:1 on `customer_id`, ADR-006 D6.2 assigns `customer_id` at
+     seed, no native key). A DISTINCT conformed dimension keyed on `customer_id` — deliberately
+     NOT folded into `dim_customer` (that stays the Type-1 golden-identity survivorship record;
+     campaign response is a separate marketing-survey business entity — folding would be a
+     mixed-domain dimension, doctrine violation). Its confidential/risk columns
+     (`credit_in_default`, `job`, `education`) keep that classification AS a Gold table — becoming
+     Gold does NOT launder RBAC; it stays scoped to BQ-05/06-facing roles, per `@scope-guardian`.
+  2. `fact_crm_case` — one row per Salesforce Case; **no SCD** (append/snapshot event); from
+     `sil_crm_case` with the Berka `client_id`→`customer_id` xwalk resolution done IN the Spark
+     builder (so dbt never touches `dim_customer_xwalk` or Silver). Carries `case_id, customer_id,
+     case_type, opened_at`.
+  3. `fact_previous_application` — one row per `SK_ID_PREV`; **no SCD** (append event); from
+     `sil_previous_application` + home_credit xwalk. Carries `sk_id_prev, customer_id, sk_id_curr,
+     name_contract_status, days_decision`. (`fact_loan_application` already carries the CURRENT
+     application's income/target/income-type — this covers only the distinct PRIOR-loan population
+     `mart_loan_funnel`'s approval-rate proxy needs.)
+  4. `fact_account_balance` — one row per `account_id`; **overwrite snapshot** (current-state,
+     stated); materializes the existing `pipeline/gold/common.py` helper
+     `latest_balance_per_account` as a real table. Carries `account_id, current_balance,
+     current_balance_myr, currency`.
+  5. `bridge_customer_account` — one row per `(customer_id, account_id)`; **Type 1 overwrite**;
+     the customer↔account N:N as a BRIDGE table (not a CTE — `journey/04_DATA_MODEL.md` lines
+     43-46 already name this pattern), from `sil_disp` + Berka xwalk. Carries `customer_id,
+     account_id, relation_type`
+     (OWNER/DISPONENT). Both disp types retained (the marts that consume it decide filtering).
+
+- **What this does NOT change:** `journey/09_SECURITY_AND_ACCESS.md` — byte-for-byte unchanged
+  (that unchanged boundary is the evidence Option B is the correct shape, not an omission).
+  ADR-002's "Snowflake reads Gold external tables only" — unchanged. Existing facts/dims — none
+  extended (`fact_loan_application` already sufficient). `dim_customer_xwalk`/Silver/masking stay
+  Spark single-path (ADR-005 core). dbt's `sources.yml` grows from 7 external tables to 12, ALL
+  still over `banking/gold/`.
+
+- **Blast radius / reversibility:** MODERATE / HIGH. 5 additive Gold builders + 6 mart transforms
+  re-authored (they are being ported to dbt regardless); nothing existing dropped until dbt
+  reconciles to each retiring mart's current S3 numbers (PLAN Phase-2 gate, extended to the 5 new
+  intermediates). Revert = drop 5 tables + git-revert builders. Cost of the 5 extra Gold builder
+  runs + affected-mart rebuild routed through `@finops` in the same envelope as PLAN Step-3.
