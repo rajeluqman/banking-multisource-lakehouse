@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Bronze -> Silver, Home Credit ("Sales / Loan Dept") domain (ADR-007 D7.1 — split out of
 the former build_silver.py so a Home Credit-specific failure never blocks the other 4
-domains). Covers `application` (column pruning), `bureau` (orphan quarantine, R-03), and
-`previous_application` (generic passthrough).
-
-Not executed against live Bronze data this session (no Spark/cloud connection here, per
-owner instruction) — written and py_compile-checked; live-run verification is pending the
-dedicated Codespace (BUILD_REPORT.md).
+domains). Covers `application` (column pruning), `bureau` (orphan quarantine, R-03),
+`previous_application` (generic passthrough), and — ADR-005 Add #5, BQ-11/HC-1 —
+`installments_payments`/`credit_card_balance`/`pos_cash_balance` (generic passthrough,
+composite MERGE keys, no aggregation at this layer per ADR-003; `bureau_balance` stays
+Bronze-only, deliberately not built here, see journey/04 "what's deliberately OUT").
 """
 
 from __future__ import annotations
@@ -56,6 +55,14 @@ def build_sil_bureau(spark: SparkSession) -> None:
 SIMPLE_TABLES = [
     # (source, bronze_table, silver_table, pk_column, mask_columns)
     ("postgres", "previous_application", "previous_application", "SK_ID_PREV", []),
+    # ADR-005 Add #5 (BQ-11/HC-1) — native grain preserved, no aggregation at Silver (ADR-003).
+    # Composite MERGE keys: no single-column natural key on any of the 3 (journey/04/05).
+    ("postgres", "installments_payments", "installments_payments",
+     ["SK_ID_PREV", "NUM_INSTALMENT_VERSION", "NUM_INSTALMENT_NUMBER"], []),
+    ("postgres", "credit_card_balance", "credit_card_balance",
+     ["SK_ID_PREV", "MONTHS_BALANCE"], []),
+    ("postgres", "pos_cash_balance", "pos_cash_balance",
+     ["SK_ID_PREV", "MONTHS_BALANCE"], []),
 ]
 
 

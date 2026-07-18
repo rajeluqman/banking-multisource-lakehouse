@@ -13,18 +13,25 @@ from pyspark.sql.functions import col, first, lit, length, substring, when
 from pipeline.common.lake_paths import layer_path
 
 
-def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_column: str) -> None:
+def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_column: str | list[str]) -> None:
     """MERGE upsert keyed on pk_column — latest row per PK wins (journey/07_PIPELINE_SPEC.md
     idempotency section). Delta MERGE, not a naive overwrite, so re-running Silver doesn't
-    lose history for PKs not present in the current Bronze read."""
+    lose history for PKs not present in the current Bronze read.
+
+    `pk_column` accepts a list for tables with no single-column natural key (e.g. the HC-1
+    monthly-snapshot tables, ADR-005 Add #5 — grain is `(sk_id_prev, months_balance)`, not one
+    column) — composite MERGE condition, same semantics, not a new code path."""
     from delta.tables import DeltaTable
+
+    pk_columns = [pk_column] if isinstance(pk_column, str) else pk_column
+    merge_condition = " AND ".join(f"t.{c} = s.{c}" for c in pk_columns)
 
     target_path = layer_path(layer, table)
     if DeltaTable.isDeltaTable(spark, target_path):
         target = DeltaTable.forPath(spark, target_path)
         (
             target.alias("t")
-            .merge(df.alias("s"), f"t.{pk_column} = s.{pk_column}")
+            .merge(df.alias("s"), merge_condition)
             .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
             .execute()
@@ -61,7 +68,7 @@ def orphan_quarantine(df: DataFrame, fk_column: str, parent_df: DataFrame, paren
 
 
 def build_simple_table(
-    spark: SparkSession, source: str, bronze_table: str, silver_table: str, pk_column: str,
+    spark: SparkSession, source: str, bronze_table: str, silver_table: str, pk_column: str | list[str],
     mask_columns: list[str] | None = None,
 ) -> DataFrame:
     """Generic passthrough builder for tables with no dedicated transform rule (naming +
