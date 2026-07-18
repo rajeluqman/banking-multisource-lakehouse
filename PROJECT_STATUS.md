@@ -2,6 +2,73 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-17 (tenth session, continued) — ✅ dbt-on-Snowflake serving layer taken through FULL
+governance (ADR-000 intake → staff-DE technical ruling → scope-guardian scope ruling → owner
+override, explicitly recorded) + ADR-010 written (lakehouse maturity: compaction now, Iceberg
+named as forward-path not built, analytical-vs-operational serving boundary). NOT YET BUILT —
+next session starts at `@finops` cost sign-off, then the actual dbt scaffold + compaction stage.**
+
+**What's DECIDED (committed, gates green) — read these 3 files before touching anything Gold/serving:**
+1. `governance/plans/PLAN-dbt-marts-serving-layer.md` — the full ADR-000 intake. **Binding design,
+   4 conditions, all non-negotiable per staff-DE's ruling:**
+   - dbt owns exactly **8 analytics marts** (BQ-01..08) as **Snowflake VIEWS by default** (a
+     table only if a specific view is provably too slow, justified per-model).
+   - dbt sources = **existing read-only external tables over S3 Gold — NO physical copy** into
+     Snowflake (no Snowpipe/`COPY INTO`). S3 stays sole physical truth, always.
+   - The 8 `pipeline/gold/mart_*.py` builders for those marts are **RETIRED, not kept alongside**
+     dbt (coexistence was explicitly vetoed — duplicate-transformation-path anti-pattern).
+     Retire from orchestration/DoD only; code stays in git history.
+   - `mart_pipeline_health` (BQ-10) is **excluded from dbt, stays Spark-native** — it's pipeline
+     reconciliation metadata, not a BQ analytics aggregation.
+   - `journey/08_SERVING_AND_EVIDENCE.md` MUST be updated to the per-BQ evidence split
+     (BQ-01..08 → Snowflake dbt; BQ-09/BQ-10 + facts/dims → S3/Spark) as a condition of
+     completion, not a follow-up.
+2. **`governance/BACKLOG.md`'s "Superseded deferrals" table** — `@scope-guardian` actually
+   **DEFERRED** this proposal (skill-showcase motive not a capability gap; retires 8 working
+   just-fixed builders; reopens a locked ADR-002 clause without a functional deficiency). **Owner
+   explicitly overrode it same-day** — this is recorded as a dated entry per scope-guardian's own
+   required process (not a silent edit). If anyone re-litigates "should we even do dbt," the
+   answer is: the scope objection is real and on record, the owner chose to proceed anyway,
+   knowingly. Don't re-ask the question; the override stands unless the owner revisits it.
+3. `governance/ADR/ADR-010-lakehouse-maturity-compaction-and-serving-patterns.md` — three
+   separate rulings, don't conflate them: (a) **Gold stays on S3, Delta, never natively in
+   Snowflake** (staff-DE trade-off ruling — copying Gold into Snowflake was considered and
+   rejected as the "warehouse-as-lakehouse" anti-pattern, mirrors an alternative ADR-002 already
+   rejected); (b) **Delta `OPTIMIZE`/`ZORDER` compaction adopted as a real pipeline stage** —
+   closes the long-standing R-41 gap (confirmed unbuilt on disk this session: zero compaction
+   calls across the whole `pipeline/` tree), the single highest-ROI fix for slow external-table/
+   Power BI reads, `ZORDER BY customer_id` specifically named for `fact_txn` point-lookups; (c)
+   **Apache Iceberg / Delta UniForm named as the forward-path, explicit migration triggers listed,
+   NOT built now** — full Delta→Iceberg conversion is its own separate migration project,
+   disproportionate for this repo's scale/infra today.
+
+**Immediate next steps, in order (per owner's own stated sequence — do not reorder):**
+1. **Route `@finops`** for dbt/Snowflake warehouse cost sign-off (size + auto-suspend policy) —
+   the one remaining gate before any dbt build per the plan file's own "next step" note.
+2. **Build the dbt scaffold** once finops clears: `dbt-snowflake` adapter, `profiles.yml`,
+   `sources.yml` over the 7 existing external tables, 8 mart models as views, `dbt test`
+   (not_null/unique on keys), `dbt docs`. Reconcile each dbt mart's output against its retiring
+   PySpark mart's CURRENT real S3 numbers (journey/08's 2026-07-17 evidence table has them) BEFORE
+   removing the PySpark builder — per the plan's Phase 2 gate.
+3. **Retire the 8 PySpark mart builders** from `databricks.yml`/`orchestrate_config.yml` +
+   DoD only after Phase-2 reconciliation passes (Phase 3, plan's own sequencing — keeps rollback
+   cheap during cutover).
+4. **Build the compaction stage** (ADR-010 decision b) — can happen independently/in parallel with
+   the dbt work, no dependency between them. `OPTIMIZE` + `ZORDER BY customer_id` on `fact_txn`
+   at minimum; consider which other Gold tables benefit most.
+5. Update `journey/08_SERVING_AND_EVIDENCE.md`'s per-BQ evidence split once dbt marts are live —
+   this is a completion condition of the dbt plan, not optional.
+
+**A governance pattern worth carrying forward**: this session ran ADR-000's intake sequence for
+real for the first time — Propose → Clarify → staff-DE technical ruling → scope-guardian scope
+ruling → (scope-guardian deferred) → owner explicit override, each step as its own dated,
+attributed record, not collapsed into one decision. When the next non-trivial feature idea comes
+up, run the same sequence — it worked exactly as ADR-000 intended, including catching a real
+proportionality objection (scope-guardian's deferral) that a single "does this fit" judgment call
+would likely have missed.
+
+---
+
 **2026-07-17 (tenth session) — ✅✅✅ journey/08 evidence refreshed against REAL full-Kaggle-scale
 S3 Gold — 10/10 BQs PROVEN. All 3 real defects found this session (BQ-04, BQ-09, BQ-10) fixed,
 redeployed, and independently artifact-verified — including a mid-session operational incident
