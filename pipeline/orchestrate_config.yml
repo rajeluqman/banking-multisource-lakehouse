@@ -119,6 +119,32 @@ stages:
     cadence: on_upstream
     depends_on: [dim_customer_xwalk, silver_sales]  # silver/application
 
+  # ---- Silver->Gold promotions (ADR-005 Add #4) — so dbt serving reads Gold-only, never Silver ----
+  - name: dim_campaign_response
+    module: pipeline.gold.dim_campaign_response
+    cadence: on_upstream
+    depends_on: [silver_marketing]  # silver/campaign_response (already 1:1 on customer_id)
+
+  - name: fact_crm_case
+    module: pipeline.gold.fact_crm_case
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_crm]  # silver/crm_case + berka xwalk resolution
+
+  - name: fact_previous_application
+    module: pipeline.gold.fact_previous_application
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_sales]  # silver/previous_application + home_credit xwalk
+
+  - name: fact_account_balance
+    module: pipeline.gold.fact_account_balance
+    cadence: on_upstream
+    depends_on: [dim_fx_rate, silver_crm]  # silver/trans via latest_balance_per_account; D-12 MYR conversion
+
+  - name: bridge_customer_account
+    module: pipeline.gold.bridge_customer_account
+    cadence: on_upstream
+    depends_on: [dim_customer_xwalk, silver_crm]  # silver/disp + berka xwalk resolution
+
   # ---- Gold marts (BQ-01..10) ----
   - name: mart_customer_360
     module: pipeline.gold.mart_customer_360

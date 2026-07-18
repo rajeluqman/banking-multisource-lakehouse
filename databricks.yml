@@ -155,6 +155,46 @@ resources:
           spark_python_task:
             python_file: pipeline/gold/fact_loan_application.py
             source: GIT
+        # ---- Silver->Gold promotions (ADR-005 Add #4) — dbt serving reads Gold-only ----
+        - task_key: dim_campaign_response
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: silver_marketing
+          spark_python_task:
+            python_file: pipeline/gold/dim_campaign_response.py
+            source: GIT
+        - task_key: fact_crm_case
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/fact_crm_case.py
+            source: GIT
+        - task_key: fact_previous_application
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_sales
+          spark_python_task:
+            python_file: pipeline/gold/fact_previous_application.py
+            source: GIT
+        - task_key: fact_account_balance
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_fx_rate
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/fact_account_balance.py
+            source: GIT
+        - task_key: bridge_customer_account
+          existing_cluster_id: ${var.cluster_id}
+          depends_on:
+            - task_key: dim_customer_xwalk
+            - task_key: silver_crm
+          spark_python_task:
+            python_file: pipeline/gold/bridge_customer_account.py
+            source: GIT
         - task_key: mart_customer_360
           existing_cluster_id: ${var.cluster_id}
           depends_on:

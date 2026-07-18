@@ -24,6 +24,11 @@ entity (MERGE upsert target, not a star — star-shaping happens at Gold).
 | `fact_txn` | one row per transaction (any source, unioned + conformed) | Financial transaction | Gold |
 | `fact_card_fraud` | one row per PaySim transaction flagged `isFraud=1` | Fraud event | Gold |
 | `fact_loan_application` | one row per Home Credit application | Loan application | Gold |
+| `dim_campaign_response` | one row per `customer_id` | Marketing/campaign response (ADR-005 Add #4 — promotes `sil_campaign_response` to Gold so serving reads Gold, not Silver; confidential/risk cols keep classification) | Gold |
+| `fact_crm_case` | one row per Salesforce Case | CRM support / fraud-follow-up ticket (ADR-005 Add #4 — promotes `sil_crm_case`, xwalk-resolved to `customer_id` in the builder) | Gold |
+| `fact_previous_application` | one row per `SK_ID_PREV` | Prior loan application (ADR-005 Add #4 — promotes `sil_previous_application`, xwalk-resolved) | Gold |
+| `fact_account_balance` | one row per `account_id` | Account current-balance snapshot (ADR-005 Add #4 — materializes `latest_balance_per_account`) | Gold |
+| `bridge_customer_account` | one row per (`customer_id`, `account_id`) | Customer↔account N:N bridge (ADR-005 Add #4 — from `sil_disp`, xwalk-resolved; bridge not CTE) | Gold |
 | `mart_customer_360` (BQ-01) | one row per customer_id | Customer relationship summary | Gold mart |
 | `mart_fraud_daily` (BQ-02) | one row per (date, transaction_type) | Fraud trend | Gold mart |
 | `mart_fraud_followup` (BQ-03) | one row per fraud event | Fraud SLA | Gold mart |
