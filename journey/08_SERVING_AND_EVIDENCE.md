@@ -12,18 +12,21 @@
 - **Serving veneer — Fasa E, BUILT 2026-07-18 (was optional/not-started as of the 2026-07-17
   entry below).** Two tiers, split by BQ, per `governance/plans/PLAN-dbt-marts-serving-layer.md` +
   `governance/ADR/ADR-005-star-schema-gold-and-mdm-xwalk.md` Addendum #4:
-  - **BQ-01..08 (the 8 analytics marts)**: authored and served by **dbt-on-Snowflake**
-    (`dbt/models/marts/*.sql`), materialized as **views** in `ANALYTICS.DBT_MARTS`, reading
-    **only** the 12 read-only Snowflake external tables in `BANKING.GOLD_EXT`
-    (`pipeline/serving/snowflake_setup.sql`) — themselves a live, verified read-in-place mirror
-    of `s3://banking-lakehouse-pipeline/banking/gold/`, no physical copy. The 8
-    `pipeline/gold/mart_*.py` PySpark builders that used to author these are **retired from
-    orchestration** (source kept in git history) — dbt is now the sole authoring path.
+  - **BQ-01..08 (the 8 analytics marts) + BQ-11 (added 2026-07-18, ADR-005 Add #5)**: authored
+    and served by **dbt-on-Snowflake** (`dbt/models/marts/*.sql`), materialized as **views** in
+    `ANALYTICS.DBT_MARTS`, reading **only** the 14 read-only Snowflake external tables in
+    `BANKING.GOLD_EXT` (`pipeline/serving/snowflake_setup.sql`) — themselves a live, verified
+    read-in-place mirror of `s3://banking-lakehouse-pipeline/banking/gold/`, no physical copy.
+    The 8 `pipeline/gold/mart_*.py` PySpark builders that used to author BQ-01..08 are **retired
+    from orchestration** (source kept in git history) — dbt is now the sole authoring path.
+    `mart_repayment_risk` (BQ-11) never had a PySpark twin — dbt-only from the start, per
+    `@staff-data-engineer`'s grain ruling.
   - **BQ-09/BQ-10 + all facts/dims/bridges**: stay **S3/Spark** as before — dim/fact tables
-    (including the 5 new ADR-005 Add #4 promotions) are Spark-built Delta on S3;
-    `mart_pipeline_health` (BQ-10) stays Spark-native, deliberately excluded from dbt (pipeline
-    run/reconciliation metadata, not a BQ analytics aggregation). Evidence for these stays the
-    boto3/`_delta_log`/direct-read method documented in the 2026-07-17 section below.
+    (including the 5 ADR-005 Add #4 promotions + `fact_repayment_behavior`, ADR-005 Add #5) are
+    Spark-built Delta on S3; `mart_pipeline_health` (BQ-10) stays Spark-native, deliberately
+    excluded from dbt (pipeline run/reconciliation metadata, not a BQ analytics aggregation).
+    Evidence for these stays the boto3/`_delta_log`/direct-read method documented in the
+    2026-07-17 section below.
   - Power BI / DuckDB stays the documented optional next step on top of the Snowflake views;
     not built this session (out of scope of the dbt cutover itself).
 
@@ -58,6 +61,57 @@ hop. Same output, simpler join, one fewer place identity resolution could silent
 still the 2026-07-17 artifact-verified numbers. dbt never touches `dim_customer_xwalk`, Silver, or
 masking (PLAN Step-1 red line) — verified by construction (`dbt/models/marts/sources.yml` lists
 only the 12 Gold external tables; no Silver source exists in the dbt project at all).
+
+## BQ-11 evidence (2026-07-18, HC-1 — new business question, ADR-005 Addendum #5)
+
+**Unlike BQ-01..08 above, BQ-11 has no retiring PySpark mart to reconcile against** — it was
+dbt-only from the `@staff-data-engineer` grain ruling onward (no `pipeline/gold/mart_repayment_
+risk.py` was ever written). Evidence here is a first-build artifact-level verification, not a
+reconciliation against a prior baseline.
+
+**Method**: ONE paid Databricks run (`@finops` ceiling $5-8/20-35min, scoped `--only
+fact_repayment_behavior,compaction` for the retry — `silver_sales`'s 3 new Silver tables landed on
+the first attempt), against the REAL full-scale Kaggle Home Credit child tables already on S3.
+**A real defect, caught and fixed same session (ADR-009 strike 1, not a two-strike incident)**:
+first attempt failed with `[DIVIDE_BY_ZERO]` — real `credit_card_balance` has genuine
+`AMT_CREDIT_LIMIT_ACTUAL=0` rows (a zero-limit card snapshot), invisible in the 5000-row local
+dev-loop sample but present at full scale; Databricks' Spark runs `spark.sql.ansi.enabled=true` by
+default, which raises on a bare `/` where legacy Spark would silently return `Infinity`/`NaN`.
+Root-caused from the real stack trace (not guessed), reproduced for free locally (ANSI mode + a
+synthetic 2-row zero-divisor test), fixed with `F.try_divide` (NULL on a zero divisor, matches the
+STTM's own `cc_avg_utilization` nullable annotation), re-verified locally, then exactly one retry.
+
+**Artifact-level verification (boto3 `_delta_log` + direct Snowflake queries, not job SUCCESS
+alone, per ADR-009):**
+
+| Table | Real row count | Verification |
+|---|---|---|
+| `sil_installments_payments` | 2,000,000 | matches `LARGE_TABLE_CAPS` exactly (`seed/postgres/load_home_credit.py`) |
+| `sil_credit_card_balance` | 3,840,312 | matches the uncapped real Kaggle row count exactly |
+| `sil_pos_cash_balance` | 2,000,000 | matches `LARGE_TABLE_CAPS` exactly |
+| `fact_repayment_behavior` | 334,710 | `_delta_log` version 0 (`WRITE`, `numOutputRows=334710`) then version 1 (`OPTIMIZE`, `zOrderBy=["customer_id"]`) — both confirmed via S3 `_delta_log`, not just job status |
+
+**Grain integrity, checked not assumed**: 287,530 rows have a resolved `customer_id`; 47,180 are
+NULL (child `SK_ID_CURR` with no `home_credit` xwalk match — the same R-29 late-arriving-dimension
+pattern already documented for other Home Credit builders, not a defect). Queried directly for true
+duplicates among the resolved rows (`GROUP BY customer_id HAVING COUNT(*) > 1` on non-null rows):
+**zero** — the fan-out-safe aggregation design (ADR-005 Add #5: each of the 3 sources pre-aggregated
+to customer grain independently before any join) holds at full scale, not just in the 5000-row local
+sample.
+
+**`mart_repayment_risk` (the BQ-11 answer), queried live in `ANALYTICS.DBT_MARTS`:**
+- 287,530 rows, grain-unique (`COUNT(*) = COUNT(DISTINCT customer_id)`) — the inner join to
+  `fact_loan_application` is exactly 1:1, as designed (both sides already customer-grain).
+- **A real signal, not noise**: `target_default=1` (defaulted) customers show
+  `late_payment_rate=0.1058` and `underpayment_rate=0.1205`, vs `target_default=0` customers at
+  `late_payment_rate=0.0767` and `underpayment_rate=0.0864` — the expected direction (worse
+  repayment behavior correlates with higher default rate), computed from 287,530 real customer rows,
+  not asserted.
+
+`dbt build`: 43/43 PASS, 0 errors (9 view models incl. `mart_repayment_risk`, 34 data tests incl.
+the new source + model tests). Full grain ruling: `governance/ADR/ADR-005-star-schema-gold-and-mdm-xwalk.md`
+Addendum #5. Scope authorization: `governance/BACKLOG.md` "Superseded deferrals" (owner override,
+2026-07-18).
 
 ## Per-BQ evidence (2026-07-17, refreshed against REAL full-Kaggle-scale S3 Gold — 10/10 PROVEN)
 
