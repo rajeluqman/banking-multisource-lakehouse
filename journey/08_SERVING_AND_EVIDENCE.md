@@ -69,44 +69,72 @@ dbt-only from the `@staff-data-engineer` grain ruling onward (no `pipeline/gold/
 risk.py` was ever written). Evidence here is a first-build artifact-level verification, not a
 reconciliation against a prior baseline.
 
-**Method**: ONE paid Databricks run (`@finops` ceiling $5-8/20-35min, scoped `--only
-fact_repayment_behavior,compaction` for the retry — `silver_sales`'s 3 new Silver tables landed on
-the first attempt), against the REAL full-scale Kaggle Home Credit child tables already on S3.
-**A real defect, caught and fixed same session (ADR-009 strike 1, not a two-strike incident)**:
-first attempt failed with `[DIVIDE_BY_ZERO]` — real `credit_card_balance` has genuine
-`AMT_CREDIT_LIMIT_ACTUAL=0` rows (a zero-limit card snapshot), invisible in the 5000-row local
-dev-loop sample but present at full scale; Databricks' Spark runs `spark.sql.ansi.enabled=true` by
-default, which raises on a bare `/` where legacy Spark would silently return `Infinity`/`NaN`.
-Root-caused from the real stack trace (not guessed), reproduced for free locally (ANSI mode + a
-synthetic 2-row zero-divisor test), fixed with `F.try_divide` (NULL on a zero divisor, matches the
-STTM's own `cc_avg_utilization` nullable annotation), re-verified locally, then exactly one retry.
+**Scale, stated honestly**: `installments_payments`/`pos_cash_balance` are **finops-capped 2M-row
+samples** of the real Kaggle data (real full counts are 13,605,401 / 10,001,358 —
+`LARGE_TABLE_CAPS`, `seed/postgres/load_home_credit.py`), NOT full canonical scale — a first
+version of this evidence said "full canonical scale," which was wrong for 2 of the 3 tables and is
+corrected here. `credit_card_balance` (3,840,312 rows) is uncapped, genuinely full scale. The cap
+is a documented finops decision, not fabrication (real published data, real random sample) —
+still worth stating precisely rather than overclaiming.
+
+**Two rounds of paid Databricks runs, both incidents caught and fixed same session (ADR-009
+strike 1 each time, neither reached two-strike):**
+
+1. **First run** — `fact_repayment_behavior` failed with `[DIVIDE_BY_ZERO]`: real
+   `credit_card_balance` has genuine `AMT_CREDIT_LIMIT_ACTUAL=0` rows (invisible in the 5000-row
+   local dev-loop sample, present at full scale); Databricks' Spark runs
+   `spark.sql.ansi.enabled=true` by default, raising on a bare `/` where legacy Spark would
+   silently return `Infinity`/`NaN`. Root-caused from the real stack trace, reproduced free
+   locally (ANSI mode + a synthetic 2-row zero-divisor test), fixed with `F.try_divide`, one retry
+   — succeeded, artifact-verified (`fact_repayment_behavior` 334,710 rows, Silver caps matched
+   exactly). This was the state independently audited afterward (below).
+2. **Independent audit found 7 real issues** in that first-pass build (not caught by the tests
+   that passed): the Gold fact's `customer_id` was declared "one row per customer_id" in
+   journey/04 but actually had 47,180 NULL-keyed rows (dbt's `unique` test silently excludes
+   NULLs, so it passed anyway); unpaid installments propagated NULL and dropped out of
+   `late_payment_rate`/`underpayment_rate` instead of counting as delinquent; `cc_avg_utilization`
+   let negative values through; the 3 new Silver tables had no R-03 orphan quarantine; and 3
+   documentation/scope gaps (this scale-wording one, a mart selection-bias note, an
+   `avg_days_late` semantics note). Full findings + fixes: commit `9e5eb19`.
+3. **Second run** (this evidence's final numbers) — required deleting the 3 poisoned Silver S3
+   prefixes first (owner-confirmed, `merge_upsert` only upserts, never deletes — the pre-fix
+   orphan rows would have stayed in Silver forever otherwise, same lesson as the BQ-10 "delete and
+   recreate" precedent), then a clean re-run of `silver_sales` + `fact_repayment_behavior` +
+   `compaction`. **SUCCESS**, artifact-verified below.
 
 **Artifact-level verification (boto3 `_delta_log` + direct Snowflake queries, not job SUCCESS
-alone, per ADR-009):**
+alone, per ADR-009) — final, post-fix state:**
 
 | Table | Real row count | Verification |
 |---|---|---|
-| `sil_installments_payments` | 2,000,000 | matches `LARGE_TABLE_CAPS` exactly (`seed/postgres/load_home_credit.py`) |
-| `sil_credit_card_balance` | 3,840,312 | matches the uncapped real Kaggle row count exactly |
-| `sil_pos_cash_balance` | 2,000,000 | matches `LARGE_TABLE_CAPS` exactly |
-| `fact_repayment_behavior` | 334,710 | `_delta_log` version 0 (`WRITE`, `numOutputRows=334710`) then version 1 (`OPTIMIZE`, `zOrderBy=["customer_id"]`) — both confirmed via S3 `_delta_log`, not just job status |
+| `sil_installments_payments` | 1,704,231 (of 2,000,000 sampled) | 295,769 rows (14.79%) R-03-quarantined as orphan `SK_ID_CURR` — matches the real raw-CSV orphan rate (14.80%, independently measured against `application.csv`) to 2 decimal places |
+| `sil_credit_card_balance` | 3,227,965 (of 3,840,312) | 612,347 rows (15.95%) quarantined |
+| `sil_pos_cash_balance` | 1,708,120 (of 2,000,000) | 291,880 rows (14.59%) quarantined |
+| `fact_repayment_behavior` | 287,530 | `_delta_log` version 2 (`WRITE`, `numOutputRows=287530`, post-fix) then version 3 (`OPTIMIZE`, `zOrderBy=["customer_id"]`) — confirmed via S3 `_delta_log`, not job status. (Versions 0-1 are the pre-fix 334,710-row write + its own OPTIMIZE, kept in Delta history, superseded not deleted.) |
 
-**Grain integrity, checked not assumed**: 287,530 rows have a resolved `customer_id`; 47,180 are
-NULL (child `SK_ID_CURR` with no `home_credit` xwalk match — the same R-29 late-arriving-dimension
-pattern already documented for other Home Credit builders, not a defect). Queried directly for true
-duplicates among the resolved rows (`GROUP BY customer_id HAVING COUNT(*) > 1` on non-null rows):
-**zero** — the fan-out-safe aggregation design (ADR-005 Add #5: each of the 3 sources pre-aggregated
-to customer grain independently before any join) holds at full scale, not just in the 5000-row local
-sample.
+**Grain integrity, checked not assumed**: **0** NULL `customer_id` (was 47,180 pre-fix) — the
+Gold builder now filters unresolved `SK_ID_CURR` (Home Credit TEST-set applicants, no `TARGET`,
+already R-03-quarantined at Silver) instead of writing them as NULL-keyed rows. `287,530 total =
+287,530 distinct customer_id` — strictly one-row-per-customer, zero duplicates, live-queried
+against Snowflake, not inferred. `cc_avg_utilization` range is now `[0.0, 2.139]` (was
+`[-0.085, 2.139]` pre-fix) — no negative utilization. **0** customers have installment history but
+a NULL `late_payment_rate` (the never-paid-customer blind spot from the pre-fix version is closed).
 
-**`mart_repayment_risk` (the BQ-11 answer), queried live in `ANALYTICS.DBT_MARTS`:**
+**`mart_repayment_risk` (the BQ-11 answer), queried live in `ANALYTICS.DBT_MARTS`, post-fix:**
 - 287,530 rows, grain-unique (`COUNT(*) = COUNT(DISTINCT customer_id)`) — the inner join to
-  `fact_loan_application` is exactly 1:1, as designed (both sides already customer-grain).
-- **A real signal, not noise**: `target_default=1` (defaulted) customers show
-  `late_payment_rate=0.1058` and `underpayment_rate=0.1205`, vs `target_default=0` customers at
-  `late_payment_rate=0.0767` and `underpayment_rate=0.0864` — the expected direction (worse
-  repayment behavior correlates with higher default rate), computed from 287,530 real customer rows,
-  not asserted.
+  `fact_loan_application` is exactly 1:1, as designed (both sides already customer-grain). Scope,
+  stated not implicit (`mart_repayment_risk.sql`'s own header comment): this covers established
+  borrowers with prior-loan history who are also in the train set — the population where "does
+  behavior predict default" is actually answerable.
+- **A real signal, not noise, and now cleaner post-fix**: `target_default=1` (defaulted) customers
+  show `late_payment_rate=0.1063`, `underpayment_rate=0.1209`, `cc_avg_utilization=0.4705`, vs
+  `target_default=0` customers at `0.0768`, `0.0865`, `0.3134` — the expected direction on all
+  three metrics, computed from 287,530 real customer rows. `cc_avg_utilization`'s ~1.5x gap between
+  defaulted/non-defaulted is the strongest of the three signals.
+
+`dbt build` (scoped re-run, `--select mart_repayment_risk source:gold.fact_repayment_behavior`):
+5/5 PASS, including `not_null` restored on `customer_id` (previously omitted because the pre-fix
+data had genuine nulls — no longer needed, the grain fix makes it hold for real).
 
 `dbt build`: 43/43 PASS, 0 errors (9 view models incl. `mart_repayment_risk`, 34 data tests incl.
 the new source + model tests). Full grain ruling: `governance/ADR/ADR-005-star-schema-gold-and-mdm-xwalk.md`

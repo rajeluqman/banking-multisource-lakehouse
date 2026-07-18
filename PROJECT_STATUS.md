@@ -2,10 +2,33 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-07-18 (thirteenth session, continued — independent audit round, model switched to Opus) —
+✅ 7 real findings from an independent re-audit of the just-built HC-1/BQ-11, ALL FIXED,
+RE-DEPLOYED, RE-VERIFIED. PR #14 open, updated with the fixes.** The build below (first pass)
+tested green and reconciled cleanly, but a fresh Opus-driven audit (re-reading the code and
+re-querying live data rather than trusting the session's own narrative) found: (1) the Gold
+fact's declared "one row per customer_id" grain didn't actually hold — 47,180 rows had a NULL key
+(dbt's `unique` test silently excludes NULLs, so it passed anyway); (2) unpaid installments
+propagated NULL and silently dropped out of `late_payment_rate`/`underpayment_rate`, making the
+worst customers look clean; (3) `cc_avg_utilization` let negative values through uncapped; (4) the
+3 new Silver tables had zero DQ coverage (no R-03 orphan quarantine, unlike `bureau`); (5) the
+evidence doc overclaimed "full canonical scale" when 2 of 3 tables were finops-capped 2M samples
+(14-20% of real Kaggle size); (6)/(7) two smaller doc gaps (mart selection-bias scope,
+`avg_days_late` semantics). All fixed (commit `9e5eb19`), local-verified free first, then owner
+confirmed a real S3 deletion of the 3 poisoned Silver prefixes (required because `merge_upsert`
+never deletes — the pre-fix orphan rows would have stayed forever otherwise, same lesson as the
+BQ-10 "delete and recreate" precedent), one more scoped Databricks run, artifact-verified against
+S3 + live Snowflake: `fact_repayment_behavior` now strictly 287,530 rows / 0 NULL customer_id / 0
+duplicates / utilization floor 0.0 / 0 customers with a NULL late-rate despite having installment
+history. `mart_repayment_risk`'s signal is now cleaner AND stronger: `cc_avg_utilization` shows a
+~1.5x gap between defaulted (0.47) and non-defaulted (0.31) customers, the strongest of the 3
+metrics. Full detail: `journey/08_SERVING_AND_EVIDENCE.md`'s BQ-11 section (rewritten, not
+appended, so it reads as one coherent account).
+
 **2026-07-18 (thirteenth session) — ✅✅✅ HC-1/BQ-11 BUILT, DEPLOYED, AND VERIFIED end-to-end,
 on `feat/bq-11-home-credit-repayment` (branched off `main` after PR #13 merged). All 9 ordered
-steps from the twelfth-session checkpoint below done. PR not yet opened at save time — do that
-next if not already done.**
+steps from the twelfth-session checkpoint below done. PR #14 open — see the audit-round entry
+above for the fixes applied after this first pass.**
 
 **A branch-hygiene issue caught and fixed before any build work**: the twelfth-session checkpoint
 commit (`c9e9743`) had been made on the OLD `feat/dbt-marts-gold-promotion` branch AFTER PR #13
