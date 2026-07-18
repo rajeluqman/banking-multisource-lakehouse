@@ -100,6 +100,12 @@
 ### Target: `silver.sil_installments_payments` (Home Credit, ADR-005 Add #5, BQ-11/HC-1)
 > Real schema confirmed against Bronze/local dev-loop CSV (`data/raw/home_credit/
 > installments_payments.csv`), not assumed from the planning doc (CLAUDE.md anti-shortcut rule #5).
+> **R-03 orphan quarantine (all 3 HC-1 child tables):** rows whose `SK_ID_CURR` has no matching
+> `sil_application` row go to `_quarantine_<table>_orphans`, counted + reported, never silently
+> dropped — same treatment as `sil_bureau` (`pipeline/silver/silver_sales.py::build_hc_child_
+> table`). At full scale ~14.8% of installments rows are orphans: they key to Home Credit
+> TEST-set applicants (only the 307,511 train applicants, the ones with `TARGET`, are loaded as
+> `application`), so they carry no `TARGET` and are unusable for BQ-11.
 | Target column | Type | Source | Source column | Transform rule | Nullable? |
 |---|---|---|---|---|---|
 | sk_id_prev | string | Postgres `installments_payments` | SK_ID_PREV | passthrough, FK to `sil_previous_application` | No |
@@ -140,19 +146,21 @@
 | sk_dpd_def | int | Postgres `pos_cash_balance` | SK_DPD_DEF | passthrough — DPD excluding tolerance-threshold defaults | No |
 
 ### Target: `gold.fact_repayment_behavior` (ADR-005 Add #5, BQ-11/HC-1)
-> Grain: one row per `customer_id` (ADR-005 Add #5's fan-out-safe aggregation — each Silver source
-> pre-aggregated to customer grain independently, THEN joined; full rule stated there, not repeated
-> here). Column-level detail belongs in `pipeline/gold/fact_repayment_behavior.py`'s own docstring
-> once built; the contract fixed here is the source→target lineage, not exact formulas.
+> Grain: **strictly** one row per `customer_id` (ADR-005 Add #5's fan-out-safe aggregation — each
+> Silver source pre-aggregated to customer grain independently, THEN joined; unresolved child
+> `SK_ID_CURR` — test-set applicants, no `TARGET` — are R-03-quarantined at Silver AND filtered in
+> the Gold builder, never written as NULL-keyed rows). Column-level detail lives in
+> `pipeline/gold/fact_repayment_behavior.py`'s docstring; the contract fixed here is source→target
+> lineage + the metric semantics that a reader could otherwise misread.
 | Target column | Type | Source | Transform rule | Nullable? |
 |---|---|---|---|---|
-| customer_id | string | `dim_customer_xwalk` (`source_system='home_credit'`) | resolved from `sk_id_curr` post-aggregation | No |
-| installment_count | int | `sil_installments_payments`, aggregated | `count(*)` per customer | No |
-| late_payment_rate | decimal | `sil_installments_payments`, aggregated | fraction of installments where `days_entry_payment > days_instalment` | Yes (no installment history) |
-| underpayment_rate | decimal | `sil_installments_payments`, aggregated | fraction of installments where `amt_payment < amt_instalment` | Yes |
-| avg_days_late | decimal | `sil_installments_payments`, aggregated | mean(`days_entry_payment - days_instalment`) where positive | Yes |
+| customer_id | string | `dim_customer_xwalk` (`source_system='home_credit'`) | resolved from `sk_id_curr` post-aggregation; unresolved rows filtered (see grain note) | No |
+| installment_count | int | `sil_installments_payments`, aggregated | `count(*)` per customer | Yes (customer may have only CC/POS history, no installments) |
+| late_payment_rate | decimal | `sil_installments_payments`, aggregated | fraction of **all** installments that are late; late = `days_entry_payment > days_instalment` OR **unpaid** (`days_entry_payment IS NULL` — every installment is past-due, so a never-paid one is delinquent, not "unknown"; verified 0 rows with `days_instalment >= 0` in the real 13.6M-row data) | Yes (no installment history) |
+| underpayment_rate | decimal | `sil_installments_payments`, aggregated | fraction of **all** installments underpaid; underpaid = `amt_payment < amt_instalment` OR **unpaid** (`amt_payment IS NULL`, paid nothing) | Yes |
+| avg_days_late | decimal | `sil_installments_payments`, aggregated | mean(`days_entry_payment - days_instalment`) over **paid-late** installments only (a never-paid installment has no measurable lateness magnitude, so it is excluded from this mean even though it counts toward `late_payment_rate`) | Yes |
 | cc_months_dpd | int | `sil_credit_card_balance`, aggregated | count of months where `sk_dpd > 0` | Yes (no CC history) |
-| cc_avg_utilization | decimal | `sil_credit_card_balance`, aggregated | mean(`amt_balance / amt_credit_limit_actual`) | Yes |
+| cc_avg_utilization | decimal | `sil_credit_card_balance`, aggregated | mean per-month `amt_balance / amt_credit_limit_actual`, **clamped `>= 0`** (a negative balance = credit/overpayment → 0 utilization, never a negative "utilization"), NULL preserved for a zero limit (`try_divide`), over-limit (`>1`) kept as a real risk signal | Yes |
 | pos_months_dpd | int | `sil_pos_cash_balance`, aggregated | count of months where `sk_dpd > 0` | Yes (no POS history) |
 | max_dpd | int | `sil_credit_card_balance` + `sil_pos_cash_balance`, aggregated | max(`sk_dpd`) across both sources | Yes |
 

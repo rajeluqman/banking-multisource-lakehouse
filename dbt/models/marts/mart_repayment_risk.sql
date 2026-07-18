@@ -5,10 +5,14 @@
 -- aggregation, ADR-005 Add #5; fact_loan_application: one row per SK_ID_CURR/customer_id) —
 -- this is a 1:1 join, cannot fan out. Reads Gold ONLY (journey/09 serving_ro = Gold-only).
 --
--- fact_repayment_behavior has ~14% NULL customer_id rows by design (child SK_ID_CURR with no
--- home_credit xwalk match, R-29 late-arriving pattern, verified 2026-07-18 at full canonical
--- scale: 47,180 of 334,710 rows) — inner join to fact_loan_application naturally drops those,
--- since a NULL customer_id can never match a real application's customer_id either.
+-- Selection scope (stated, not incidental): this is an INNER join, so the mart covers only
+-- customers present in BOTH facts — i.e. train-set applicants (fact_loan_application, which
+-- carries TARGET) who ALSO have prior-loan child records (fact_repayment_behavior). Applicants
+-- with no prior-loan history are excluded (no behavioral signal to correlate), and test-set
+-- applicants were already filtered out of fact_repayment_behavior upstream (no TARGET). Net:
+-- BQ-11 answers "does repayment behavior predict default" for established borrowers with a prior
+-- loan history — the population where the question is actually answerable. This is the correct
+-- scope for the question, but it is a scope, so it is named here rather than left implicit.
 
 select
     r.customer_id,

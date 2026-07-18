@@ -15,7 +15,19 @@ here at Gold-build time in Spark rather than in a serving view. Never join
 `SK_ID_CURR` -> `customer_id` resolution via `dim_customer_xwalk` is done HERE (ADR-005
 single identity path), same pattern as `fact_loan_application.py`/`fact_previous_
 application.py`. `bureau_balance` (the 4th un-Silver'd HC table) is deliberately NOT read —
-different join path (`SK_ID_BUREAU`), out of scope for this fact."""
+different join path (`SK_ID_BUREAU`), out of scope for this fact.
+
+**Grain integrity (ADR-005 Add #5 ruling: "filter or R-29 -1"):** child `SK_ID_CURR` values
+with no `home_credit` xwalk match are the Home Credit TEST-set applicants (only the 307,511
+train applicants — the ones carrying `TARGET` — are loaded as `application`/the xwalk; the
+~14.8% of child rows keyed to test applicants have no `application` row and no `TARGET`).
+Those rows are FILTERED at the end (`customer_id IS NOT NULL`), not written as NULL-keyed
+rows — a customer-grain fact must be one-row-per-`customer_id`, and a test-set applicant with
+no `TARGET` can never contribute to BQ-11's "does behavior predict default" anyway. The
+`-1` unknown-member convention (R-29) does NOT apply here: `customer_id` is this fact's GRAIN,
+not a dimension FK, so lumping thousands of distinct unresolved applicants under one `-1` row
+would be a meaningless aggregate. Silver-layer orphan quarantine (R-03, `silver_sales.py`)
+also removes these upstream, so this filter is a belt-and-suspenders guard."""
 
 from __future__ import annotations
 
@@ -30,8 +42,20 @@ def build(spark: SparkSession) -> None:
     inst_agg = (
         installments
         .withColumn("_days_late", F.col("DAYS_ENTRY_PAYMENT") - F.col("DAYS_INSTALMENT"))
-        .withColumn("_is_late", F.col("_days_late") > 0)
-        .withColumn("_is_underpaid", F.col("AMT_PAYMENT") < F.col("AMT_INSTALMENT"))
+        # An UNPAID installment (NULL DAYS_ENTRY_PAYMENT / AMT_PAYMENT) is delinquent, not
+        # "unknown": every installment in this source is past-due (verified 0 rows with
+        # DAYS_INSTALMENT >= 0 across the real 13,605,401-row table -- it records the payment
+        # history of PRIOR loans, all before the current application). So an installment with
+        # no payment recorded is counted as BOTH late and underpaid, giving late_payment_rate/
+        # underpayment_rate a denominator of ALL installments (matches journey/05_STTM.md's
+        # "fraction of installments" wording). Previously NULLs propagated and silently dropped
+        # out of the avg -- the never-paid customer, the STRONGEST delinquency signal, looked
+        # clean. avg_days_late stays conditional on a real _days_late (you cannot measure "how
+        # late" a never-paid installment is), so it is the mean lateness among paid-late rows.
+        .withColumn("_is_late", F.when(F.col("DAYS_ENTRY_PAYMENT").isNull(), F.lit(True))
+                    .otherwise(F.col("_days_late") > 0))
+        .withColumn("_is_underpaid", F.when(F.col("AMT_PAYMENT").isNull(), F.lit(True))
+                    .otherwise(F.col("AMT_PAYMENT") < F.col("AMT_INSTALMENT")))
         .groupBy("SK_ID_CURR")
         .agg(
             F.count(F.lit(1)).alias("installment_count"),
@@ -47,9 +71,16 @@ def build(spark: SparkSession) -> None:
         # try_divide, not a plain `/` -- real AMT_CREDIT_LIMIT_ACTUAL has genuine 0 rows (a
         # zero-limit card snapshot), invisible in the 5000-row local dev-loop sample but real
         # at full Databricks scale (live-caught, ANSI mode raises ArithmeticException on a
-        # bare `/` where legacy Spark would have silently returned Infinity/NaN). NULL for
-        # those rows is correct per the STTM's own cc_avg_utilization nullable annotation.
-        .withColumn("_utilization", F.try_divide(F.col("AMT_BALANCE"), F.col("AMT_CREDIT_LIMIT_ACTUAL")))
+        # bare `/` where legacy Spark would have silently returned Infinity/NaN). NULL for a
+        # zero limit is correct per the STTM's cc_avg_utilization nullable annotation.
+        .withColumn("_utilization_raw", F.try_divide(F.col("AMT_BALANCE"), F.col("AMT_CREDIT_LIMIT_ACTUAL")))
+        # Clamp negatives to 0: AMT_BALANCE < 0 is a credit/overpayment balance -> 0 utilization
+        # (no risk from utilization), never a negative "utilization" (meaningless as a feature;
+        # observed min was -0.085 at full scale). NULL (zero limit) is preserved -- `NULL < 0`
+        # is NULL, so it falls through to otherwise and stays NULL, not coerced to 0. Over-limit
+        # (>1) is a real risk signal and is deliberately NOT capped.
+        .withColumn("_utilization", F.when(F.col("_utilization_raw") < 0, F.lit(0.0))
+                    .otherwise(F.col("_utilization_raw")))
         .groupBy("SK_ID_CURR")
         .agg(
             F.sum((F.col("SK_DPD") > 0).cast("int")).alias("cc_months_dpd"),
@@ -88,6 +119,10 @@ def build(spark: SparkSession) -> None:
 
     fact = (
         combined.join(xwalk, "sk_id_curr_str", "left")
+        # Grain guard (ADR-005 Add #5): drop child SK_ID_CURR with no xwalk match (test-set
+        # applicants, no TARGET) so the table is strictly one-row-per-customer_id, as declared
+        # in journey/04. See module docstring for why filter, not the R-29 -1 convention.
+        .filter(F.col("customer_id").isNotNull())
         .select(
             "customer_id",
             "installment_count", "late_payment_rate", "underpayment_rate", "avg_days_late",

@@ -3,9 +3,12 @@
 the former build_silver.py so a Home Credit-specific failure never blocks the other 4
 domains). Covers `application` (column pruning), `bureau` (orphan quarantine, R-03),
 `previous_application` (generic passthrough), and — ADR-005 Add #5, BQ-11/HC-1 —
-`installments_payments`/`credit_card_balance`/`pos_cash_balance` (generic passthrough,
-composite MERGE keys, no aggregation at this layer per ADR-003; `bureau_balance` stays
-Bronze-only, deliberately not built here, see journey/04 "what's deliberately OUT").
+`installments_payments`/`credit_card_balance`/`pos_cash_balance` (composite MERGE keys, no
+aggregation at this layer per ADR-003, PLUS R-03 orphan quarantine on `SK_ID_CURR` ->
+`application`: ~14.8% of child rows key to Home Credit TEST-set applicants that were never
+loaded into `application` — no `TARGET`, unusable for BQ-11 — so they are quarantined and
+counted here, not silently dropped downstream by a Gold-layer xwalk miss; `bureau_balance`
+stays Bronze-only, deliberately not built here, see journey/04 "what's deliberately OUT").
 """
 
 from __future__ import annotations
@@ -55,15 +58,34 @@ def build_sil_bureau(spark: SparkSession) -> None:
 SIMPLE_TABLES = [
     # (source, bronze_table, silver_table, pk_column, mask_columns)
     ("postgres", "previous_application", "previous_application", "SK_ID_PREV", []),
-    # ADR-005 Add #5 (BQ-11/HC-1) — native grain preserved, no aggregation at Silver (ADR-003).
-    # Composite MERGE keys: no single-column natural key on any of the 3 (journey/04/05).
-    ("postgres", "installments_payments", "installments_payments",
-     ["SK_ID_PREV", "NUM_INSTALMENT_VERSION", "NUM_INSTALMENT_NUMBER"], []),
-    ("postgres", "credit_card_balance", "credit_card_balance",
-     ["SK_ID_PREV", "MONTHS_BALANCE"], []),
-    ("postgres", "pos_cash_balance", "pos_cash_balance",
-     ["SK_ID_PREV", "MONTHS_BALANCE"], []),
 ]
+
+# ADR-005 Add #5 (BQ-11/HC-1) — native grain preserved, no aggregation at Silver (ADR-003).
+# Composite MERGE keys (no single-column natural key on any of the 3, journey/04/05), PLUS an
+# R-03 orphan quarantine on SK_ID_CURR -> sil_application (same pattern as sil_bureau). The
+# quarantined rows are the test-set applicants' payment history (no application row / no TARGET).
+# (bronze_table, silver_table, pk_columns)
+HC_CHILD_TABLES = [
+    ("installments_payments", "installments_payments",
+     ["SK_ID_PREV", "NUM_INSTALMENT_VERSION", "NUM_INSTALMENT_NUMBER"]),
+    ("credit_card_balance", "credit_card_balance", ["SK_ID_PREV", "MONTHS_BALANCE"]),
+    ("pos_cash_balance", "pos_cash_balance", ["SK_ID_PREV", "MONTHS_BALANCE"]),
+]
+
+
+def build_hc_child_table(spark: SparkSession, bronze_table: str, silver_table: str, pk_columns: list[str]) -> None:
+    """R-03 orphan quarantine on `SK_ID_CURR` -> `sil_application`, then composite-key MERGE.
+    Child rows whose `SK_ID_CURR` has no `application` row (Home Credit test-set applicants,
+    never loaded — no `TARGET`) go to `_quarantine_<table>_orphans`, counted and reported,
+    never silently dropped (matches `build_sil_bureau`'s treatment)."""
+    child = spark.read.format("delta").load(layer_path("bronze", "postgres", bronze_table))
+    application = spark.read.format("delta").load(layer_path("silver", "application"))
+    clean, orphans = orphan_quarantine(child, "SK_ID_CURR", application, "SK_ID_CURR")
+    merge_upsert(spark, clean, "silver", silver_table, pk_columns)
+    n_orphans = orphans.count()
+    if n_orphans > 0:
+        orphans.write.format("delta").mode("append").save(layer_path("silver", f"_quarantine_{silver_table}_orphans"))
+        print(f"WARNING: {n_orphans} {silver_table} rows quarantined as orphan FKs (R-03, SK_ID_CURR not in application)")
 
 
 def main() -> int:
@@ -74,7 +96,10 @@ def main() -> int:
     build_sil_bureau(spark)
     for source, bronze_table, silver_table, pk_column, mask_columns in SIMPLE_TABLES:
         build_simple_table(spark, source, bronze_table, silver_table, pk_column, mask_columns)
-    print(f"silver_sales complete: {2 + len(SIMPLE_TABLES)} tables.")
+    for bronze_table, silver_table, pk_columns in HC_CHILD_TABLES:
+        build_hc_child_table(spark, bronze_table, silver_table, pk_columns)
+    n_tables = 2 + len(SIMPLE_TABLES) + len(HC_CHILD_TABLES)
+    print(f"silver_sales complete: {n_tables} tables.")
     return 0
 
 

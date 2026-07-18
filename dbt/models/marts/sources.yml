@@ -74,12 +74,10 @@ sources:
         description: >-
           Customer-grain repayment-behavior profile (late-payment/underpayment/DPD signals),
           fan-out-safe aggregation of sil_installments_payments/sil_credit_card_balance/
-          sil_pos_cash_balance. 334,710 rows verified at full canonical scale (2026-07-18);
-          287,530 have a resolved customer_id, 47,180 are NULL (child SK_ID_CURR with no
-          home_credit xwalk match — R-29 late-arriving pattern, same class as other Home
-          Credit builders, not a defect). No `not_null` test on customer_id for this reason;
-          `unique` holds (dbt's built-in unique test excludes NULLs, verified no true
-          duplicates among the 287,530 resolved rows).
+          sil_pos_cash_balance. Strictly one row per customer_id: child SK_ID_CURR with no
+          home_credit xwalk match (Home Credit test-set applicants — no application row, no
+          TARGET) are R-03-quarantined at Silver and filtered in the Gold builder (ADR-005
+          Add #5), NOT written as NULL-keyed rows. Both not_null and unique therefore hold.
         columns:
           - name: customer_id
-            tests: [unique]
+            tests: [not_null, unique]
