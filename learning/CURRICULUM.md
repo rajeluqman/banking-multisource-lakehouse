@@ -23,6 +23,11 @@
 | **M7** | Serving layer | Why Snowflake external tables OVER Gold S3 (or DuckDB $0 fallback) — a view, never a copied table? What does ADR-010 say about the serving-pattern boundary? | `journey/08_SERVING_AND_EVIDENCE.md`, `governance/ADR/ADR-010-lakehouse-maturity-compaction-and-serving-patterns.md` | explain "serving = view never a duplicated table" |
 | **M8** | The 10 business questions | What is "done"? Why is scope frozen at exactly BQ-01…BQ-10 (Customer-360 / fraud / loan funnel)? | `journey/02_BUSINESS_QUESTIONS.md`, `governance/BACKLOG.md` | map one BQ to the marts that answer it |
 | **M9** | Governance as code | Why encode governance in hooks/gates/ADR-000 instead of trusting discipline? What is the two-strike incident rule and why does it exist? | `governance/ADR/ADR-000-feature-intake-protocol.md`, `governance/ADR/ADR-009-two-strike-incident-protocol.md`, `gates/` | add/read one gate and explain what it catches |
+| **M10** | External orchestration: control-plane vs data-plane | Why does Airflow trigger-and-poll instead of computing the medallion itself (D-10)? Why is the DAB job fired as ONE `DatabricksRunNowOperator`, not 22 individual task-keys — what breaks if you re-implement that graph in Airflow? Why does source→Landing extraction run on the Airflow worker but nothing past Landing does? | `governance/ADR/ADR-011-external-airflow-orchestration-and-terraform-scope.md` (this repo — read the Addendum #2 correction, it supersedes the body's topology diagram), `../banking-multisource-lakehouse-airflow-dag/README.md`, `../banking-multisource-lakehouse-airflow-dag/dags/pipeline_dag.py`, `../banking-multisource-lakehouse-airflow-dag/include/PIPELINE_SIDE_CONTRACT.md` | trace one data-interval backfill end-to-end: name which watermark param crosses which repo boundary, and where `now()` would have silently broken it |
+
+> **M10 artifacts live in the sibling repo** `banking-multisource-lakehouse-airflow-dag` — clone
+> it alongside this one (`git clone .../banking-multisource-lakehouse-airflow-dag ../banking-multisource-lakehouse-airflow-dag`).
+> If it isn't present at that path, STOP and surface it — don't teach M10 from memory of the ADR.
 
 ## How a module runs (the ritual)
 1. @cikgu poses the WHY questions. You answer from reasoning — **NO reading yet.**
@@ -33,6 +38,6 @@
 5. LEARNING_LOG entry + score update.
 
 ## Suggested order
-M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9.
+M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10.
 (M4 MDM crosswalk is the spine of this project — no shared key across sources is THE defining
 constraint; everything Gold depends on it. Do not skip ahead to M5 star schema before M4 clicks.)
