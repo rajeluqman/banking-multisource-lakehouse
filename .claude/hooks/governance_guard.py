@@ -24,10 +24,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from _config import get, load_config  # noqa: E402
-
 REPO = Path(__file__).resolve().parent.parent.parent
+
+# _config.py lives in gates/, not .claude/ — put THAT on the path (inserting .claude/ here never
+# resolves _config, which crashed the hook at import time on every governed-path edit). Import
+# defensively: a broken/missing config loader must degrade this hook to a no-op, never hard-crash
+# a tool call.
+sys.path.insert(0, str(REPO / "gates"))
+try:
+    from _config import get, load_config  # noqa: E402
+except Exception:  # pragma: no cover
+    def load_config() -> dict:  # type: ignore
+        return {}
+
+    def get(config: dict, dotted_path: str, default=None):  # type: ignore
+        return default
 
 
 def _load_rules() -> list[dict]:
