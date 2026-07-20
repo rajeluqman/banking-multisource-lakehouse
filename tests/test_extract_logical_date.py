@@ -5,7 +5,13 @@ sets it, never off wall-clock `date.today()`; the two time-watermarked extractor
 `[DATA_INTERVAL_START - overlap, DATA_INTERVAL_END)` and skip lake-watermark read/write in
 that mode. No live DB/Spark/Salesforce connection required — all I/O is faked.
 
-Run directly:  python -m unittest tests.test_extract_logical_date
+Requires the full requirements.txt (pandas, pyspark, simple-salesforce, pyarrow — all four are
+transitively imported by the extractor modules under test). The `tests` CI job is deliberately
+pure-stdlib and installs none of them, so this file skips there — run it locally where they're
+installed; tests/test_run_interval.py covers the same logical_date()/interval_window() logic
+and stays CI-enforced either way.
+
+Run directly:  pip install -r requirements.txt && python -m unittest tests.test_extract_logical_date
 """
 
 from __future__ import annotations
@@ -19,10 +25,22 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pandas as pd
+try:
+    import pandas as pd
 
-from pipeline.extract import cdc_common, cdc_initial_snapshot, obp_client, salesforce_extract
-from pipeline.extract import jdbc_batch_common
+    from pipeline.extract import cdc_common, cdc_initial_snapshot, obp_client, salesforce_extract
+    from pipeline.extract import jdbc_batch_common
+except ImportError as exc:
+    # The `tests` CI job is deliberately pure-stdlib (ci.yml: "$0, secret-free, no
+    # pyspark/cloud deps") and installs none of requirements.txt's pandas/pyspark/
+    # simple-salesforce, all needed transitively just to import these extractor modules.
+    # Skip this integration suite there; it still runs locally with `pip install -r
+    # requirements.txt`. tests/test_run_interval.py covers the same logical_date()/
+    # interval_window() logic and stays CI-enforced either way.
+    pd = None
+    _IMPORT_ERROR = exc
+else:
+    _IMPORT_ERROR = None
 
 INTERVAL_ENV = {
     "DATA_INTERVAL_START": "2020-01-15T00:00:00+00:00",
@@ -117,6 +135,7 @@ class _FakeConnection:
         return _FakeCursor(self._rows)
 
 
+@unittest.skipUnless(_IMPORT_ERROR is None, f"requires requirements.txt, not installed: {_IMPORT_ERROR}")
 class ExtractDtPartitioningTestCase(unittest.TestCase):
     """Common tmp-lake harness — patches `lake_root()` once so every module's `layer_path()`
     call (all of them import it from `pipeline.common.lake_paths`) resolves under a scratch
