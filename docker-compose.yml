@@ -20,6 +20,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Also joins the external network shared with the airflow-dag repo's Airflow containers, so
+    # the Airflow worker (a separate docker-compose project) can reach this container by name —
+    # `docker network create banking_lakehouse_net` once, before starting either compose project.
+    networks:
+      - default
+      - banking_lakehouse_net
 
   mssql:
     image: mcr.microsoft.com/mssql/server:2022-latest
@@ -37,7 +43,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - default
+      - banking_lakehouse_net
 
 volumes:
   postgres_data:
   mssql_data:
+
+networks:
+  default: {}
+  banking_lakehouse_net:
+    external: true
