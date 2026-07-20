@@ -40,6 +40,7 @@ import pandas as pd
 
 from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.run_interval import interval_window, logical_date
 from pipeline.common.watermark import read_watermark, write_watermark
 from pipeline.extract.salesforce_auth import get_salesforce_client
 
@@ -72,13 +73,15 @@ def _soql_datetime(ts: dt.datetime) -> str:
 
 
 def _pull_records(sf, sf_object: str, fields: list[str], since: dt.datetime | None,
-                   extra_where: str | None = None) -> list[dict]:
+                   extra_where: str | None = None, until: dt.datetime | None = None) -> list[dict]:
     soql = f"SELECT {', '.join(fields)} FROM {sf_object}"
     conditions = []
     if extra_where is not None:
         conditions.append(extra_where)
     if since is not None:
         conditions.append(f"SystemModstamp > {_soql_datetime(since)}")
+    if until is not None:
+        conditions.append(f"SystemModstamp < {_soql_datetime(until)}")
     if conditions:
         soql += " WHERE " + " AND ".join(conditions)
 
@@ -93,27 +96,41 @@ def _pull_records(sf, sf_object: str, fields: list[str], since: dt.datetime | No
 
 def extract_object(sf, source: str, bronze_table: str, full_backfill: bool = False) -> str | None:
     """Pulls `bronze_table`'s Salesforce object, lands it as parquet under Landing
-    `dt=<today>`, writes a manifest + `_SUCCESS`, advances the watermark. Returns the
+    `dt=<logical date>`, writes a manifest + `_SUCCESS`, advances the watermark. Returns the
     Landing partition path, or None if the pull returned zero rows (no partition written
-    for an empty pull, same discipline as `cdc_common.py.poll_cdc_log`)."""
+    for an empty pull, same discipline as `cdc_common.py.poll_cdc_log`).
+
+    Same predicate precedence as `jdbc_batch_common.extract_table` (staff-DE ruling,
+    contract-compliance fix, 2026-07-20) — full_backfill unbounded; Airflow-interval mode
+    bounded `[start-overlap, end)` with no watermark read/write; else lake-watermark mode.
+    """
     sf_object, fields, extra_where = TABLES[bronze_table]
 
-    last_watermark = None if full_backfill else read_watermark(source, bronze_table)
-    since = None
-    if last_watermark is not None:
-        since = dt.datetime.fromisoformat(last_watermark) - OVERLAP_WINDOW
+    window = None if full_backfill else interval_window(OVERLAP_WINDOW)
+    since: dt.datetime | None
+    until: dt.datetime | None
+    if full_backfill:
+        since = until = None
+    elif window is not None:
+        since, until = window
+    else:
+        last_watermark = read_watermark(source, bronze_table)
+        since = dt.datetime.fromisoformat(last_watermark) - OVERLAP_WINDOW if last_watermark is not None else None
+        until = None
 
-    records = _pull_records(sf, sf_object, fields, since, extra_where)
+    records = _pull_records(sf, sf_object, fields, since, extra_where, until=until)
     if not records:
         return None
 
     df = pd.DataFrame.from_records(records)
-    run_date = dt.date.today().isoformat()
+    run_date = logical_date()
     partition_path = layer_path("landing", source, bronze_table, f"dt={run_date}")
     _write_partition(partition_path, source, bronze_table, df)
 
-    new_watermark = dt.datetime.now(dt.timezone.utc).isoformat()
-    write_watermark(source, bronze_table, new_watermark)
+    if window is None:
+        # Only advance the lake watermark in fallback mode — an interval-mode run must not
+        # mutate state a later watermark-mode run depends on (see jdbc_batch_common.py).
+        write_watermark(source, bronze_table, dt.datetime.now(dt.timezone.utc).isoformat())
     return partition_path
 
 

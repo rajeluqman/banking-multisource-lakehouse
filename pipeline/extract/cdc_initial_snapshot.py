@@ -40,19 +40,25 @@ import pandas as pd
 
 from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.run_interval import logical_date
 from pipeline.common.watermark import read_watermark, write_watermark
 
 
 def extract_initial_snapshot(df: pd.DataFrame, source: str, table: str) -> str | None:
     """Lands `df` (the rows just written to `source`.`table`, all columns, verbatim) into
-    Landing as one `dt=<today>` parquet partition. Returns the partition path written, or
-    None if this table's initial snapshot was already taken (idempotency guard — a second
-    seed-script run must not re-land the same bulk load a second time)."""
+    Landing as one `dt=<logical date>` parquet partition. Returns the partition path written,
+    or None if this table's initial snapshot was already taken (idempotency guard — a second
+    seed-script run must not re-land the same bulk load a second time).
+
+    `dt=` uses the same `logical_date()` helper as every other extractor for class-
+    consistency (staff-DE ruling, 2026-07-20), though in practice this always resolves to
+    `today()` at seed time — there's no Airflow interval above a one-time seed-script
+    bootstrap, so `DATA_INTERVAL_START` is never set when this runs."""
     watermark_key = f"{table}_initial_snapshot"
     if read_watermark(source, watermark_key) is not None:
         return None
 
-    run_date = dt.date.today().isoformat()
+    run_date = logical_date()
     partition_path = layer_path("landing", source, table, f"dt={run_date}")
     _write_snapshot(partition_path, source, table, df)
     write_watermark(source, watermark_key, dt.datetime.now(dt.timezone.utc).isoformat())

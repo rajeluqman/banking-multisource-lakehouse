@@ -66,7 +66,17 @@ Landing (cdc)  : <lake_root>/landing/<source>/<table>_cdc/dt=<YYYY-MM-DD>/...
 ```
 
 - Partitioning is by `dt=<logical date>` — **the ingest task's `data_interval_start` maps to `dt`**
-  (idempotency, ADR-011 D11.5 — never `now()`).
+  (idempotency, ADR-011 D11.5 — never `now()`). Mechanism: the ingestion executor sets
+  `DATA_INTERVAL_START`/`DATA_INTERVAL_END` (ISO-8601) in the extraction task's environment for
+  every run, including backfills; `pipeline/common/run_interval.py`'s `logical_date()` reads
+  `DATA_INTERVAL_START`'s date for `dt=`, falling back to wall-clock `today()` only when neither
+  var is set (local dev-loop / direct-CLI runs with no Airflow above them — not a production
+  path). The two time-watermarked extractors (Postgres/MSSQL via `jdbc_batch_common.py`,
+  Salesforce) additionally bound their pull predicate to `[start - overlap, end)` in this mode
+  and skip lake-watermark read/write entirely, so a backfill is a pure function of the logical
+  date. The Teradata CDC path (`cdc_common.py`) keeps pulling via its monotonic `_cdc_log.seq`
+  offset regardless — only its `dt=` partition key follows the logical date, since a seq-keyed
+  change log has no natural time window to bound a backfill against.
 - `promotion_gate_salesforce` reads each source's `dt=*` Landing partitions not yet `_promoted` and
   appends to Bronze Delta. It loops over `SOURCE_TABLES` generically — new tables under an existing
   source are picked up automatically, no gate change.

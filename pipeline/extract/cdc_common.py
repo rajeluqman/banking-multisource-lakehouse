@@ -24,6 +24,7 @@ from pathlib import Path
 
 from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.run_interval import logical_date
 from pipeline.common.watermark import read_watermark, write_watermark
 
 
@@ -50,7 +51,14 @@ def poll_cdc_log(connection, source: str, table: str) -> str | None:
     ]
     max_seq = max(e["seq"] for e in events)
 
-    run_date = dt.date.today().isoformat()
+    # dt= is keyed to the logical date (PIPELINE_SIDE_CONTRACT.md §3, ADR-011 D11.5) — that's
+    # the ONLY change this module needs for contract compliance. Unlike the time-watermarked
+    # extractors (jdbc_batch_common.py, salesforce_extract.py), the PULL itself deliberately
+    # stays keyed to the monotonic `_cdc_log.seq` offset, not a DATA_INTERVAL time window —
+    # a seq-keyed change log has no natural time window to bound a backfill against, and
+    # bolting one on would invent a window the source doesn't model (staff-DE ruling,
+    # 2026-07-20).
+    run_date = logical_date()
     partition_path = layer_path("landing", source, f"{table}_cdc", f"dt={run_date}")
     _write_events(partition_path, source, table, events)
     write_watermark(source, f"{table}_cdc_log", str(max_seq))
