@@ -33,6 +33,7 @@ from pathlib import Path
 
 from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.run_interval import logical_date
 
 MAX_RETRIES = 5
 BACKOFF_BASE_SECONDS = 2
@@ -136,7 +137,11 @@ def collect_public_transactions(client: OBPClient, accounts: list[dict]) -> list
 def _land(items: list[dict], name: str) -> str:
     """Parquet-free, verbatim JSON payload + manifest + `_SUCCESS` (R-19), same shape as
     every other module's Landing partition contract."""
-    run_date = dt.date.today().isoformat()
+    # dt= keyed to the logical date (PIPELINE_SIDE_CONTRACT.md §3, ADR-011 D11.5) — the only
+    # change this module needs; OBP has no watermark (full bounded walk every run, staff-DE
+    # ruling 2026-07-20), so re-running under the same logical date overwrites the same
+    # partition, same as before.
+    run_date = logical_date()
     partition_path = layer_path("landing", "obp", name, f"dt={run_date}")
     out_dir = Path(partition_path.replace("s3://", "/tmp/s3_staging/"))
     out_dir.mkdir(parents=True, exist_ok=True)

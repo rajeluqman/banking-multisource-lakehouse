@@ -14,6 +14,7 @@ from pyspark.sql import DataFrame, SparkSession
 
 from pipeline.common import s3_io
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.run_interval import interval_window, logical_date
 from pipeline.common.watermark import read_watermark, write_watermark
 
 OVERLAP_WINDOW = dt.timedelta(minutes=5)  # R-26 — catches late/out-of-order drip-feed writes
@@ -40,13 +41,35 @@ def extract_table(
 
     Idempotent: re-running with the same watermark re-pulls the same window — downstream
     dedup happens at the Silver MERGE (PK + updated_at), not here (journey/07_PIPELINE_SPEC.md).
+
+    Predicate precedence (staff-DE ruling, contract-compliance fix, 2026-07-20):
+      1. `full_backfill=True` -> unbounded `1=1` (ADR-007 D7.4 Strategy 1), unchanged.
+      2. `DATA_INTERVAL_START`/`DATA_INTERVAL_END` both set (Airflow-driven run, incl.
+         backfills) -> BOUNDED window `[start - overlap, end)`, keyed to the logical date,
+         not the lake watermark — this is what makes a backfill a pure function of the
+         logical date (PIPELINE_SIDE_CONTRACT.md §3, ADR-011 D11.5). The lake watermark is
+         deliberately NOT read or written in this mode: reading it would reintroduce the
+         non-determinism this fix removes, and writing `end` risks regressing the watermark
+         if backfills run out of chronological order, corrupting the next watermark-mode run.
+      3. Neither set (local dev-loop / direct-CLI, no Airflow above this run) -> the
+         pre-existing lake-watermark high-water-mark mode, unchanged.
     """
-    last_watermark = None if full_backfill else read_watermark(source, table)
-    if last_watermark is not None:
-        effective_start = dt.datetime.fromisoformat(last_watermark) - OVERLAP_WINDOW
-        predicate = f"{updated_at_column} > '{effective_start.isoformat()}'"
+    window = None if full_backfill else interval_window(OVERLAP_WINDOW)
+    if full_backfill:
+        predicate = "1=1"
+    elif window is not None:
+        effective_start, effective_end = window
+        predicate = (
+            f"{updated_at_column} > '{effective_start.isoformat()}' "
+            f"AND {updated_at_column} < '{effective_end.isoformat()}'"
+        )
     else:
-        predicate = "1=1"  # first run — full pull
+        last_watermark = read_watermark(source, table)
+        if last_watermark is not None:
+            effective_start = dt.datetime.fromisoformat(last_watermark) - OVERLAP_WINDOW
+            predicate = f"{updated_at_column} > '{effective_start.isoformat()}'"
+        else:
+            predicate = "1=1"  # first run — full pull
 
     df: DataFrame = (
         spark.read.format("jdbc")
@@ -63,7 +86,7 @@ def extract_table(
         .load()
     )
 
-    run_date = dt.date.today().isoformat()
+    run_date = logical_date()
     partition_path = layer_path("landing", source, table, f"dt={run_date}")
     # Spark's native writer needs S3A (hadoop-aws) to target s3:// directly — local-mode Spark
     # doesn't have that wired in (pipeline/common/spark_session.py only adds Delta + JDBC-driver
@@ -77,11 +100,13 @@ def extract_table(
     df.write.mode("overwrite").parquet(local_dir)
 
     row_count = df.count()
-    new_watermark = dt.datetime.now(dt.timezone.utc).isoformat()
     _write_manifest(local_dir, source, table, row_count)
     if s3_io.is_s3(partition_path):
         s3_io.upload_dir(local_dir, partition_path)
-    write_watermark(source, table, new_watermark)
+    if window is None:
+        # Only advance the lake watermark in fallback mode (see precedence note above) —
+        # an interval-mode run must not mutate state a later watermark-mode run depends on.
+        write_watermark(source, table, dt.datetime.now(dt.timezone.utc).isoformat())
 
     return partition_path
 
