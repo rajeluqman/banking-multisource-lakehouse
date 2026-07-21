@@ -8,7 +8,8 @@ here once, shared across all 5 domain pipelines, not duplicated per file (ADR-00
 from __future__ import annotations
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, first, lit, length, substring, when
+from pyspark.sql import Window
+from pyspark.sql.functions import col, first, lit, length, row_number, substring, when
 
 from pipeline.common.lake_paths import layer_path
 
@@ -20,11 +21,27 @@ def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_
 
     `pk_column` accepts a list for tables with no single-column natural key (e.g. the HC-1
     monthly-snapshot tables, ADR-005 Add #5 — grain is `(sk_id_prev, months_balance)`, not one
-    column) — composite MERGE condition, same semantics, not a new code path."""
+    column) — composite MERGE condition, same semantics, not a new code path.
+
+    Bronze can legitimately hold more than one row per PK once a table has been promoted more
+    than once (each promotion batch appends, it doesn't replace) — Delta's MERGE INTO rejects a
+    source with duplicate match keys outright (DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE),
+    live-caught 2026-07-21 the first time a table was promoted a second time against non-empty
+    Bronze. Dedup to one row per PK (latest `updated_at` wins, ties broken by `created_at`) before
+    the MERGE — this is what actually delivers the "latest row per PK wins" the docstring already
+    promised; the MERGE's own whenMatchedUpdateAll was never a substitute for it, since that clause
+    only handles target-vs-source conflicts, not source-vs-source ones."""
     from delta.tables import DeltaTable
 
     pk_columns = [pk_column] if isinstance(pk_column, str) else pk_column
     merge_condition = " AND ".join(f"t.{c} = s.{c}" for c in pk_columns)
+
+    if "updated_at" in df.columns:
+        order_cols = [col("updated_at").desc()]
+        if "created_at" in df.columns:
+            order_cols.append(col("created_at").desc())
+        window = Window.partitionBy(*pk_columns).orderBy(*order_cols)
+        df = df.withColumn("_rn", row_number().over(window)).filter(col("_rn") == 1).drop("_rn")
 
     target_path = layer_path(layer, table)
     if DeltaTable.isDeltaTable(spark, target_path):

@@ -281,6 +281,16 @@ resources:
 
 targets:
   dev:
-    mode: development
     default: true
     # workspace.host resolves from the DATABRICKS_HOST env var (no literal host here — ADR-008).
+    # `mode: development`'s mandatory name_prefix ("[dev <user>] ...", DAB enforces it must
+    # contain the username in this mode — an empty/custom override is rejected outright) broke
+    # the orchestration repo's job_name lookup: PIPELINE_SIDE_CONTRACT.md commits to the bare
+    # job name "banking-lakehouse-berka-salesforce-bronze-silver", which is what
+    # DatabricksRunNowOperator looks up by name — a prefixed name is a contract violation, not a
+    # cosmetic difference. Dropping `mode: development` (this bundle declares no schedule/trigger
+    # for it to auto-pause anyway, per the comment above — the only mode default that mattered
+    # here) is what actually makes `bundle deploy` produce the name the contract promises.
+    # (found + fixed 2026-07-21, live end-to-end orchestration verification from the airflow-dag
+    # repo; owner-authorized cross-repo edit, see that repo's docs/ROUTE-* for the routing trail
+    # this would otherwise have followed.)
