@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Nothing authenticating belongs in this file:
+# Databricks auth comes from DATABRICKS_TOKEN and Snowflake auth from SNOWFLAKE_PASSWORD or a
+# key pair, both supplied through the environment. journey/09 §1.
+
+aws_region       = "ap-southeast-1"
+lake_bucket_name = "example-banking-lakehouse"
+
+databricks_host       = "https://example.cloud.databricks.com"
+databricks_account_id = "00000000-0000-0000-0000-000000000000"
+
+# On the very first run this is not yet known — see README "The first-apply ordering".
+databricks_unity_catalog_role_arn = "arn:aws:iam::000000000000:role/banking-lakehouse-uc-access"
+
+snowflake_organization_name = "EXAMPLE_ORG"
+snowflake_account_name      = "EXAMPLE_ACCOUNT"
+snowflake_user    = "EXAMPLE_USER"
+
+serving_warehouse_auto_suspend_seconds = 60
+monthly_credit_quota                   = 5

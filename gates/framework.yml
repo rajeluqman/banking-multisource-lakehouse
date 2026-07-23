@@ -18,6 +18,8 @@ paths:
     - "seed/"
     - "pipeline/"
     - "docs/"
+    # ADR-011 Addendum #3 — Terraform cloud-primitives layer (owner override of D11.2's deferral).
+    - "infra/"
 
   # Where transform models live, for model-name drift checks. "models" = the Silver/Gold
   # PySpark table-builder scripts (pipeline/) PLUS dbt SQL mart models (dbt/) — dbt was

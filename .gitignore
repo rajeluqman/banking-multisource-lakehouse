@@ -42,3 +42,13 @@ dbt/.user.yml
 
 # OS/editor
 .DS_Store
+
+# Terraform (ADR-011 Addendum #3 — cloud primitives as code)
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfvars
+!infra/terraform/terraform.tfvars.example
+infra/terraform/tfplan
+infra/terraform/plan.txt
+crash.log

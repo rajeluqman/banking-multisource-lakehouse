@@ -564,3 +564,49 @@ SCD strategies, dbt views all untouched.
 **D-10 + ADR-012:** D-10 preserved — all Airflow lives in the external repo; this repo stays
 Airflow-free (the extraction executor is the EXTERNAL repo's Airflow worker, not in-repo code). No
 ADR-012, no override needed.
+
+---
+
+### Addendum #3 (2026-07-23) — Owner override: D11.2's deferral is lifted. Terraform is ADOPTED for the cloud-primitives layer.
+
+**Trigger.** Owner directed that the Terraform cloud-primitives layer be built now, explicitly
+overriding D11.2's deferral and its routing of the scope question to `@scope-guardian`. Recorded
+here rather than applied silently, following the same convention used elsewhere in this owner's
+repos: an override is *recorded, not rescinded* — D11.2's reasoning stays readable so the
+trade-off that was accepted is legible later.
+
+**Ruling.** D11.2's *deferral* is lifted. D11.2's *scope boundary* is not — it was never the part
+under dispute, and it is the part that keeps the design coherent.
+
+**In scope, and now built (`infra/terraform/`):**
+- S3 lake bucket: versioning, SSE, full public-access block, landing-prefix lifecycle expiry.
+- IAM role + least-privilege policy Unity Catalog assumes, including the self-referential trust
+  policy leg UC requires.
+- UC storage credential + two external locations (medallion root, and a `read_only` Gold location
+  that makes R-32's "serving_ro sees Gold only" enforceable at the storage layer).
+- Storage-level `databricks_grants` on those locations.
+- Snowflake serving warehouse + resource monitor — `auto_suspend`, credit quota, notify/suspend
+  triggers.
+
+**Still permanently out of scope — unchanged, and not part of this override:**
+- **The Databricks Job. ADR-008 D8.1 stands absolutely.** Asset Bundles own `databricks.yml`.
+  No `databricks_job` resource exists in `infra/terraform/` and none may be added. Two IaC tools
+  reconciling one resource is the drift anti-pattern D11.4 #3 exists to prevent.
+- **Catalog/schema/table grants.** `pipeline/gold/grants/uc_grants.sql` keeps those. The seam is
+  storage-level access (Terraform) versus data-object access (SQL DDL); they do not overlap.
+
+**State.** No backend, no state of record — the reasoning in D11.2's reversibility note is
+accepted in full. The review artifact is the plan diff posted to a pull request. This keeps
+blast radius low and avoids a `.tfstate` that rots when the disposable trial workspace is
+replaced (D-14). Adopting a backend later requires no restructuring.
+
+**Verification status at the time of writing.** `terraform fmt -check`, `init` and `validate` pass
+against pinned providers with a committed `.terraform.lock.hcl`. `terraform plan` against the live
+account has **not** been run — it needs credentials this repository does not hold. Until that plan
+is captured, `infra/terraform/` is reviewed-and-valid configuration, not a reconciled record of
+live infrastructure, and `infra/terraform/README.md` says so plainly.
+
+**Consequences.** `gates/framework.yml` gains `infra/` in `paths.path_roots` so doc references
+resolve. A new `.github/workflows/terraform.yml` runs fmt/init/validate/tflint/tfsec with no
+credentials on every PR, and an approval-gated `plan` job that posts the diff as a PR comment.
+No `schedule:` appears in it — D-10 holds, and `boundary_contract.py` enforces it.

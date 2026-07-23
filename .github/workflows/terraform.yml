@@ -1,0 +1,119 @@
+name: Terraform (plan on PR)
+
+# Static Terraform checks are $0 and credential-free, so they run on every PR exactly like
+# gates/ does. Only `plan` touches a real cloud account, and it is gated behind the `terraform`
+# GitHub Environment (owner approval) — the same pattern cd.yml uses for the metered bundle run.
+#
+# NO `schedule:` block. Cadence belongs to the external orchestrator (D-10), and
+# gates/boundary_contract.py fails the build if a cron appears in any workflow here.
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+defaults:
+  run:
+    working-directory: infra/terraform
+
+jobs:
+  # No credentials. Runs on every PR including forks.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (no backend, no credentials)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: Run tflint
+        run: tflint --format compact
+
+      - name: tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra/terraform
+          soft_fail: false
+
+  # Touches the real account, so it is approval-gated and never runs on forks.
+  plan:
+    runs-on: ubuntu-latest
+    needs: static
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
+    environment: terraform
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_lake_bucket_name: ${{ vars.LAKE_BUCKET_NAME }}
+      TF_VAR_databricks_host: ${{ secrets.DATABRICKS_HOST }}
+      TF_VAR_databricks_account_id: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+      TF_VAR_databricks_unity_catalog_role_arn: ${{ secrets.UC_ROLE_ARN }}
+      TF_VAR_snowflake_organization_name: ${{ vars.SNOWFLAKE_ORG }}
+      TF_VAR_snowflake_account_name: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      TF_VAR_snowflake_user: ${{ secrets.SNOWFLAKE_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC, not static keys — same posture as the AWS federation used elsewhere.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform init -backend=false
+
+      - name: Plan
+        id: plan
+        run: terraform plan -no-color -input=false -out=tfplan | tee plan.txt
+
+      # The plan diff is the review artifact. Posting it means an infrastructure change is read
+      # before it is approved, not after it has happened.
+      - name: Post plan to pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/terraform/plan.txt', 'utf8');
+            const body = `#### Terraform plan\n\n<details><summary>Show plan</summary>\n\n\`\`\`terraform\n${plan.slice(0, 60000)}\n\`\`\`\n\n</details>`;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
