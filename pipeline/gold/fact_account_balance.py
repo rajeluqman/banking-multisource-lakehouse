@@ -22,7 +22,12 @@ def build(spark: SparkSession) -> None:
     trans = spark.read.format("delta").load(layer_path("silver", "trans"))
     balances = latest_balance_per_account(spark, trans) \
         .select("account_id", "current_balance", "current_balance_myr", "currency")
-    balances.write.format("delta").mode("overwrite").save(layer_path("gold", "fact_account_balance"))
+    # `overwriteSchema` (2026-09-04, P3) — `current_balance`/`current_balance_myr` changed
+    # from `double` to DECIMAL(18,2) with the INC-0004 fix, and a plain `overwrite` enforces
+    # the existing schema rather than replacing it. Appropriate here for the reason stated in
+    # this module's docstring: this is an overwrite SNAPSHOT, re-materialized in full each run
+    # with no history, so a schema replacement loses nothing.
+    balances.write.format("delta").option("overwriteSchema", "true").mode("overwrite").save(layer_path("gold", "fact_account_balance"))
 
 
 def main() -> int:

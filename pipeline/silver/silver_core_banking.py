@@ -18,6 +18,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.money import to_money
 from pipeline.silver.common import mask_last4, merge_upsert
 
 
@@ -50,7 +51,12 @@ def build_sil_obp_transactions(spark: SparkSession) -> None:
         col("this_account.id").alias("account_id"),
         col("details.completed").alias("txn_ts"),
         col("details.description").alias("description"),
-        col("details.value.amount").cast("double").alias("amount"),
+        # MONEY, not double (2026-09-04, INC-0004 completion). OBP returns the amount as a
+        # JSON string; casting it straight to DECIMAL(18,2) parses the decimal text exactly,
+        # whereas the previous `.cast("double")` round-tripped it through binary floating
+        # point first and baked in a representation error before any Gold conversion could
+        # see it. `dq_currency_gate.py` already registers this column as monetary (D-12/R-14).
+        to_money("details.value.amount").alias("amount"),
         col("details.value.currency").alias("currency"),
     )
     merge_upsert(spark, df, "silver", "obp_transactions", "transaction_id")

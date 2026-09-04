@@ -8,10 +8,10 @@ here once, shared across all 5 domain pipelines, not duplicated per file (ADR-00
 from __future__ import annotations
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import Window
-from pyspark.sql.functions import col, first, lit, length, row_number, substring, when
+from pyspark.sql.functions import col, length, lit, substring, when
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.ordering import latest_row_per_key
 
 
 def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_column: str | list[str]) -> None:
@@ -38,23 +38,27 @@ def merge_upsert(spark: SparkSession, df: DataFrame, layer: str, table: str, pk_
     deduped when that column existed silently no-op'd for OBP and hit the identical MERGE error on
     the very next run. Delta's one-row-per-match-key requirement doesn't care whether the source
     has a recency signal to break ties with, so neither should this. Order by `updated_at`/
-    `created_at` when present (genuinely latest wins); otherwise fall back to an arbitrary but
-    stable per-run tie-break — still correct (any single survivor satisfies MERGE), just not a
-    meaningful "latest" without a real timestamp to order by."""
+    `created_at` when present (genuinely latest wins).
+
+    DETERMINISM FIX (2026-09-04, INC-0003). The no-recency-column fallback was
+    `order_cols = [lit(1)]` — a constant, so EVERY row tied and `row_number()` chose between them
+    by whatever order the executor happened to see them in. The previous docstring called that
+    "an arbitrary but stable per-run tie-break — still correct". Stable within one execution's
+    plan is not the same as stable across executions: the survivor could change with partition
+    count, task scheduling or speculative execution, so re-running the same Bronze input could
+    write different Silver rows with no error and no signal. `updated_at`/`created_at` alone were
+    not a total order either — two rows can share a timestamp.
+    Ordering now always ends in a content-derived tie-break
+    (`pipeline/common/ordering.py::latest_row_per_key`), so the survivor is the same on every
+    run. Rows that tie on the content hash are identical, so the choice between them cannot
+    change the output. Where no recency column exists the survivor is still not semantically
+    "the latest" — that limitation is unchanged — but it is now reproducible."""
     from delta.tables import DeltaTable
 
     pk_columns = [pk_column] if isinstance(pk_column, str) else pk_column
     merge_condition = " AND ".join(f"t.{c} = s.{c}" for c in pk_columns)
 
-    order_cols = []
-    if "updated_at" in df.columns:
-        order_cols.append(col("updated_at").desc())
-    if "created_at" in df.columns:
-        order_cols.append(col("created_at").desc())
-    if not order_cols:
-        order_cols = [lit(1)]
-    window = Window.partitionBy(*pk_columns).orderBy(*order_cols)
-    df = df.withColumn("_rn", row_number().over(window)).filter(col("_rn") == 1).drop("_rn")
+    df = latest_row_per_key(df, pk_columns)
 
     target_path = layer_path(layer, table)
     if DeltaTable.isDeltaTable(spark, target_path):
@@ -119,11 +123,23 @@ def latest_state_from_cdc_log(spark: SparkSession, source: str, cdc_bronze_table
     """CDC Bronze holds a raw op-log (I/U/D events, ADR-006 D6.3) — Silver needs the LATEST
     state per pk_value, with 'D' ops excluded (soft-delete semantics, D-06; hard-delete
     replay is a Fasa C-later CDC concern per R-25, unchanged by ADR-006). Shared across
-    silver_crm.py/silver_marketing.py (ADR-007 D7.1) — not duplicated."""
+    silver_crm.py/silver_marketing.py (ADR-007 D7.1) — not duplicated.
+
+    DETERMINISM FIX (2026-09-04, INC-0003). This previously read
+    `events.orderBy(col("seq").desc()).groupBy("pk_value").agg(first("op"), first("changed_at"))`.
+    That does not do what it appears to: `groupBy` triggers a shuffle, the preceding `orderBy`
+    does not survive it, and Spark documents `first()` as non-deterministic precisely because
+    its result depends on a row order that a shuffle may change. So the "latest" CDC state per
+    key was whichever event an executor happened to see first — potentially an OLD `U`, or a
+    `D` that should have excluded the key (or the reverse, resurrecting a deleted one). It could
+    differ between two runs over identical Bronze, silently.
+    Replaced with a windowed `row_number()` ordered by `seq` descending and closed with a
+    content-derived tie-break, so one row per key is selected reproducibly. Output contract is
+    unchanged: `(pk_column, latest_op, latest_changed_at)`, keys whose latest op is `D` excluded."""
     events = spark.read.format("delta").load(layer_path("bronze", source, cdc_bronze_table))
-    latest = (
-        events.orderBy(col("seq").desc())
-        .groupBy("pk_value")
-        .agg(first("op").alias("latest_op"), first("changed_at").alias("latest_changed_at"))
+    latest = latest_row_per_key(events, ["pk_value"], extra_order=[col("seq").desc()])
+    return latest.filter(col("op") != "D").select(
+        col("pk_value").alias(pk_column),
+        col("op").alias("latest_op"),
+        col("changed_at").alias("latest_changed_at"),
     )
-    return latest.filter(col("latest_op") != "D").withColumnRenamed("pk_value", pk_column)

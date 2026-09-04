@@ -18,16 +18,22 @@ produces a NULL converted amount for it rather than a silently wrong number."""
 from __future__ import annotations
 
 import csv
+from decimal import Decimal
 
 from pyspark.sql import SparkSession
-from pyspark.sql.types import DoubleType, StringType, StructField, StructType
+from pyspark.sql.types import StringType, StructField, StructType
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.money import FX_RATE
 from pipeline.common.repo_paths import find_seed_artifact
 
+# `rate_to_myr` was DoubleType until 2026-09-04 (INC-0004). A float rate made every downstream
+# MYR conversion in `pipeline/gold/common.py::to_myr` order-dependent under SUM. It is now
+# DECIMAL(18,6) — see `pipeline/common/money.py::FX_RATE` for the scale choice and for the
+# documented assumption that no journey/ or ADR document specifies a rate precision.
 FX_RATE_SCHEMA = StructType([
     StructField("currency_code", StringType()),
-    StructField("rate_to_myr", DoubleType()),
+    StructField("rate_to_myr", FX_RATE),
     StructField("rate_as_of", StringType()),
     StructField("note", StringType()),
 ])
@@ -38,9 +44,19 @@ def build(spark: SparkSession, fx_csv_path: str | None = None) -> None:
     with open(fx_csv_path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     for row in rows:
-        row["rate_to_myr"] = float(row["rate_to_myr"]) if row["rate_to_myr"] not in (None, "") else None
+        # Decimal(str(...)) not Decimal(float(...)) — parsing via float would bake in the
+        # representation error this fix exists to remove before the value is ever stored.
+        row["rate_to_myr"] = Decimal(str(row["rate_to_myr"])) if row["rate_to_myr"] not in (None, "") else None
     df = spark.createDataFrame(rows, schema=FX_RATE_SCHEMA)
-    df.write.format("delta").mode("overwrite").save(layer_path("gold", "dim_fx_rate"))
+    # `overwriteSchema` is REQUIRED, not decorative (2026-09-04, P3). Delta's `overwrite`
+    # replaces data but ENFORCES the existing schema, so writing the new DECIMAL(18,6)
+    # `rate_to_myr` over a table still carrying the old `double` raises a schema-mismatch
+    # error — this stage runs before every Gold fact, so without this the whole Gold layer
+    # is blocked on the first post-fix run. Safe here precisely because this table is a
+    # static seed re-materialized from `seed/artifacts/fx_rates.csv` on every run: it holds
+    # no history, so replacing its schema destroys nothing (contrast the append-mode facts,
+    # which cannot be retyped this way at all and need a real rebuild).
+    df.write.format("delta").option("overwriteSchema", "true").mode("overwrite").save(layer_path("gold", "dim_fx_rate"))
 
 
 def main() -> int:

@@ -2,6 +2,148 @@
 
 ## ▶ RESUME HERE (read this first)
 
+**2026-09-04 (P3 pre-run inspection) — ⛔ P3 BLOCKED. The healthy run could not be executed
+from this machine. Everything that does not require the run was completed: the money path was
+traced end to end, the P2 fix was found INCOMPLETE AT BOTH ENDS, the Silver half was fixed, and
+the real blast radius of the schema change was mapped.**
+
+> **▶ NEXT SESSION: the work resumes in the GitHub Codespace, not here.** The exact first action
+> is in "Blocker removal" below. `NEXT-PROMPT-P3.md` is still the governing brief; its §0.3 list of
+> affected tables is now known to be INCOMPLETE — read the table below instead.
+
+*Why blocked.* P3 Steps 5-8 need a real end-to-end run. This box has no Docker, no AWS CLI or
+credentials, no `.env`, no `./data` local lake, and neither `delta-spark` nor `boto3` installed —
+so not one pipeline stage can execute, not even the local-disk fallback. It also runs PySpark
+4.0.0 against a repo pinned to 3.5.3, and `spark.createDataFrame` from a Python list crashes the
+worker here (which `pipeline/gold/dim_fx_rate.py:50` uses). None of this is fixable by editing
+code; it needs the Codespace.
+
+*The P2 money fix was incomplete at BOTH ends — `INC-0005`, card `TS-MONEY-02`.* `INC-0004` was
+closed as `fixed`, claiming fixed point "end to end". It covered the middle only:
+
+- **Upstream:** Silver still cast money to `double` (`silver_core_banking.py:53`,
+  `silver_crm.py:150-151`) — and `journey/05_STTM.md:60` had declared those columns **decimal**
+  all along, so this was already a violation of a locked contract that no gate checked.
+- **Downstream:** `pipeline/serving/snowflake_setup.sql` re-declares `amount`, `amount_myr`,
+  `rate_to_myr`, `current_balance`, `current_balance_myr` as **`DOUBLE`** (:103, :107, :123,
+  :125, :195, :272-273). Every dbt mart aggregates over those — `sum(amount_myr)`,
+  `sum(current_balance_myr)`, `approx_percentile(...)`. The float `SUM` the fix existed to remove
+  is still running, in Snowflake, on the numbers the dashboards actually read.
+
+Gold's own `.cast(MONEY)` in the middle was *hiding* the upstream half: rounding a double back to
+2dp recovers ordinary amounts, so the output looked right and degrades only at large magnitudes.
+
+*Fixed this session.* Silver now uses `pipeline/common/money.py::to_money`
+(`silver_core_banking.py:57`, `silver_crm.py:158-159`) — cast from the source representation, never
+via double. `pipeline/gold/common.py::to_myr` now calls `assert_no_float_money()` on its input, so
+the Silver→Gold boundary fails closed instead of rounding quietly. Two **static** regression guards
+(`tests/test_money_precision.py::TestMoneyPathHasNoFloatReentry`) need no Spark, no JDK and no
+lake — the defect they catch is an edit, and an edit lands long before a cloud run can catch it.
+Both were mutation-verified: reintroduce either defect and they fail.
+**Deliberately NOT fixed:** the Snowflake `DOUBLE` declarations. Those are a consumer-facing
+contract (Power BI reads them) — an owner decision, not a cleanup pass. This is the remaining
+half of `INC-0005`, and P3 cannot claim an end-to-end money path until it is resolved.
+
+*The schema-change blast radius is bigger than the P3 brief said.* It named two append-mode Gold
+facts. The real list, derived by reading every writer:
+
+| Table | Write mode | What happens on the first post-fix run | Resolution |
+|---|---|---|---|
+| `dim_fx_rate` | `overwrite` | **FAILS FIRST** — `rate_to_myr` double→DECIMAL(18,6); overwrite enforces the existing schema. Runs *before every Gold fact*, so it blocks the entire Gold layer | ✅ Fixed — `overwriteSchema` added (static seed, holds no history) |
+| `fact_account_balance` | `overwrite` | Fails — balance columns retyped | ✅ Fixed — `overwriteSchema` added (documented overwrite snapshot, no history) |
+| `fact_txn` | **`append`** | Fails — append cannot retype `amount_myr` | ⛔ **Rebuild required** — owner action |
+| `fact_card_fraud` | **`append`** | Fails — same | ⛔ **Rebuild required** — owner action |
+| `sil_trans` | `merge_upsert` | **Worse than failing** — Delta MERGE enforces the TARGET schema and applies implicit casts, so a DECIMAL source merging into a `double` target is expected to be silently cast back. The fix would appear applied and do nothing | ⛔ **Rebuild required** — verify the actual behaviour first |
+| `sil_obp_transactions` | `merge_upsert` | Same | ⛔ **Rebuild required** — verify first |
+
+`dim_fx_rate` failing first is the significant one: the P3 brief did not list it, and it is a P2
+change that was never completed. The run would have died at the first Gold stage.
+
+*Rebuild mechanism — the answer to the brief's "if none exists, STOP".* There is **no script**.
+There is a documented **procedure with precedent**: owner-confirmed manual deletion of the S3
+prefix, then re-run, escalated through `@staff-data-engineer` per ADR-009. It was used twice
+before (the BQ-10 "delete and recreate", and the doubled-append remediation where `fact_txn` came
+back to 6,363,370). `pipeline/common/s3_io.py::_delete_prefix` exists but is internal to
+`upload_dir` and is a Landing-partition helper, not a table-rebuild tool. **No destructive
+command was improvised here**, per the brief.
+
+*Also found, recorded not fixed (out of P3 scope).*
+
+- `make seed-all` is **broken** — it calls `seed-sap-hana` → `seed/sap_hana/load_berka.py`, a file
+  ADR-006 Addendum #2 deleted when Salesforce replaced SAP HANA as source #4. The live loader is
+  `seed/salesforce/load_berka.py`. This resolves the brief's open SAP HANA question: **SAP HANA is
+  NOT in the execution path**, superseded by ADR-006 Add #2; only the Makefile still references it.
+- `mart_daily_flows.py:37` casts money back to `double` for `net_flow` — that file is RETIRED from
+  orchestration (dbt owns the marts), so it is recorded, not fixed.
+- `silver_marketing.avg_yearly_balance` is declared `decimal` by the STTM, passthrough in code, and
+  `BIGINT` in `snowflake_setup.sql:232` — three different answers. Not FX-converted and not
+  blocking, so deferred rather than widening the rebuild scope.
+
+*Open question from the brief, now answered.* `journey/05_STTM.md` does **not** pin a monetary
+precision — it says `decimal` with no precision/scale anywhere. So `money.py`'s `DECIMAL(18,2)` /
+`DECIMAL(18,6)` remain the documented assumptions, unchallenged by any journey/ADR doc. What the
+STTM *does* settle is that the Silver `double` casts were always contract violations.
+
+*Verification.* `python -m unittest discover -s tests` → **46 tests, OK, 11 skipped** (was 44/11;
++2 new, no new skips). Gates `journey_completeness`, `boundary_contract`, `secrets_scan`,
+`incident_hygiene`, `claim_ledger` green. `doc_reference_contract` → **exactly 11 violations, the
+same 11 files as before** — nothing introduced. `CLAIM-001…0004` remain `DROP`; nothing was
+promoted. No fault was injected; `INC-0005` is `provenance: discovered`.
+
+*Blocker removal — the single next action.* In the Codespace, with sources up and AWS creds set:
+**capture the pre-rebuild aggregates BEFORE deleting anything** (`SELECT COUNT(*)`,
+`SUM(amount_myr)` per `source_system`, `SUM(current_balance_myr)`, and the schema of `fact_txn`,
+`fact_card_fraud`, `fact_account_balance`, `sil_trans`, `sil_obp_transactions`). The rebuild
+destroys the only surviving copy of the pre-fix numbers, and — as recorded in the vault's
+`projects/de-fault-lab/03_healthy-baseline.md` section 4.5 — **no MYR total has ever been written
+down**, so without this capture the money-reconciliation step has nothing to reconcile against and
+can never be completed.
+
+**2026-09-04 (framework reconciliation + determinism fixes) — ✅ 2 real incidents carded, 2
+correctness defect classes fixed, 21 regression tests added. No BREAK/fault-lab work.**
+
+> **▶ NEXT SESSION: paste `NEXT-PROMPT-P3.md` (repo root) as the opening prompt.** It carries the
+> full carried-forward context — including two known-incomplete items that will break the first
+> real run if not handled first: Silver still casts money to `double` in 3 places
+> (`silver_core_banking.py:53`, `silver_crm.py:150-151`), and `fact_txn` / `fact_card_fraud` use
+> `.mode("append")`, which cannot retype `amount_myr` from `double` to `decimal(18,2)` — those two
+> tables need a rebuild, not an incremental run.
+
+*Reconnaissance.* `BANKING-FRAMEWORK-RECON.md` (new, root) maps this repo's existing
+LEARN→BUILD→VALIDATE→DIAGNOSE→PROVE framework against the vault's DE Fault Lab catalogue. Headline:
+25 of 34 catalogued faults are already DEFENDED or PARTIAL here; the incident-*consumption*
+machinery (ledger, card format, `de-diagnosis`, claim ledger) was complete while the ledger itself
+was empty. **The BREAK/injection programme is NOT implemented and remains deferred** — it conflicts
+with the vault roadmap's locked tier sequencing and with this repo's own prior scope rejection.
+Reversing either needs an ADR through ADR-000, not a silent workaround. See RECON §9.1.
+
+*Incidents carded (both `provenance: discovered`, neither injected).* `learning/INCIDENTS.jsonl`
+created — INC-0001 the 47,180-NULL-key grain violation that dbt's `unique` test passed
+(`status: fixed`), INC-0002 `merge_upsert` having no delete branch so a corrected re-run cannot
+retract bad rows (`status: diagnosed` — it was remediated by manual S3 deletion, never fixed in
+code, and the entry says so). Cards `TS-GRAIN-01` / `TS-UPSERT-01` in
+`cheatsheets/troubleshooting/00_INDEX.md`, which now carries a mandatory `provenance` field.
+
+*Defects found by inspection and fixed.* INC-0003 — three "one row per key" selections were not
+total orders, so the surviving row could differ between two runs of identical input with no error:
+`silver/common.py::merge_upsert` (`orderBy(lit(1))`), `silver/common.py::latest_state_from_cdc_log`
+(`groupBy` + `first()`, where the shuffle discards the preceding `orderBy`), and
+`gold/common.py::latest_balance_per_account` (`orderBy(date)` on day-granular Berka data). INC-0004
+— the FX path was `double × double` (`gold/common.py:27`, `dim_fx_rate.rate_to_myr` as
+`DoubleType`), making every MYR total partition-order dependent. New shared primitives
+`pipeline/common/ordering.py` and `pipeline/common/money.py` (DECIMAL(18,2) money, DECIMAL(18,6)
+rate — precision/scale are documented assumptions, no journey/ADR specifies them).
+
+*Verification.* `python -m unittest discover -s tests` → **44 tests, OK** (11 skips are
+pre-existing, `simple_salesforce` not installed), stable across repeated runs. Gates
+`journey_completeness`, `boundary_contract`, `secrets_scan`, `incident_hygiene`, `claim_ledger`
+all green. `doc_reference_contract` fails with 11 violations — **pre-existing**, all in
+journey/ADR docs referencing undeclared sibling repos, none in a file touched this session.
+
+*Expect numbers to move.* Converting FX to fixed point changes `amount_myr` /
+`current_balance_myr` in `fact_txn`, `fact_card_fraud`, `fact_account_balance` and every mart
+downstream. That is the fix working. Re-verify against a real run before quoting any MYR figure.
+
 **2026-07-18 (thirteenth session, continued — independent audit round, model switched to Opus) —
 ✅ 7 real findings from an independent re-audit of the just-built HC-1/BQ-11, ALL FIXED,
 RE-DEPLOYED, RE-VERIFIED. PR #14 open, updated with the fixes.** The build below (first pass)

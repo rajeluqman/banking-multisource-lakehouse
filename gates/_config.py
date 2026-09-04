@@ -1,5 +1,6 @@
 """Shared config loader for gates/*.py — reads gates/framework.yml.
 
+Ported from the owner's G5 canon (banking-multisource-lakehouse/gates/_config.py) unchanged.
 Uses PyYAML if available (virtually guaranteed in any dbt-based repo); falls back to a minimal
 inline parser covering the subset of YAML this file actually uses (nested maps, lists of
 strings, no anchors/flow-style) so the kit still works with zero extra dependencies.
@@ -8,8 +9,6 @@ strings, no anchors/flow-style) so the kit still works with zero extra dependenc
 from __future__ import annotations
 
 from pathlib import Path
-
-CONFIG_PATH = Path(__file__).resolve().parent / "framework.yml"
 
 
 def _minimal_yaml_parse(text: str) -> dict:
@@ -65,8 +64,11 @@ def _minimal_yaml_parse(text: str) -> dict:
     return root
 
 
-def load_config() -> dict:
-    text = CONFIG_PATH.read_text()
+def load_config(config_path: Path | None = None) -> dict:
+    """`config_path` is injectable so a gate's self-test can point at a fixture's own
+    framework.yml instead of the real repo's — see each gate's `self_test()`."""
+    path = config_path or (Path(__file__).resolve().parent / "framework.yml")
+    text = path.read_text()
     try:
         import yaml  # type: ignore
 

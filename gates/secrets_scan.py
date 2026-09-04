@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """Secrets scan gate — config-driven, reads gates/framework.yml `secrets_scan:`.
 
-Kit v1.1.0 addition (journey/09_SECURITY_AND_ACCESS.md). Detects the shapes named in that doc:
-literal-assigned password/api_key/secret/token variables, AWS access-key IDs, private-key file
-headers, and connection strings with an embedded password. Stdlib only ($0, no deps).
+Ported from the owner's G5 canon (banking-multisource-lakehouse/gates/secrets_scan.py) — the
+one gate in the original G5 set that already shipped a `--self-test` before this framework
+existed. Its own docstring already named the exact failure class this whole framework generalizes
+(D-12/F3): a "hollow gate" that never actually fires, guarded against by planting a fake secret
+and asserting detection still works. Kept verbatim in spirit; only the repo-root plumbing was
+generalized to match the other gates.
 
-Two named failure classes from v1.0.0's dry-run validation (see CHANGELOG) apply here too, so
-this script is deliberately conservative:
-  - **hollow gate** — a check that never actually fires. Guarded against by `--self-test`, which
-    plants a fake secret in an isolated temp file and asserts detection still works.
-  - **self-matching regex** — a gate whose own source/docs get flagged by its own patterns.
-    Guarded against by never writing a literal `name = "value"`-shaped example in this file's
-    docstrings/comments (describe the shape in prose instead), plus an inline `secrets-scan:allow`
-    marker for the rare doc that legitimately needs to show one.
+Detects: literal-assigned password/api_key/secret/token variables, AWS access-key IDs,
+private-key file headers, and connection strings with an embedded password. Stdlib only ($0).
 
 Exit 0 = no hits. Exit 1 = at least one match (or `--self-test` found the detector broken).
 
@@ -21,6 +18,15 @@ Run:  python gates/secrets_scan.py
 """
 
 from __future__ import annotations
+
+import sys as _sys  # stdout/stderr reconfigure must happen before any print() call below.
+# Both streams, not just stdout: a gate's failure path prints via file=sys.stderr, and a
+# cp1252-decoded bullet byte re-encoded as utf-8 downstream (e.g. by a parent subprocess
+# capture) produces mojibake in the incident ledger's symptom field — found by
+# governance_guard.py's own smoke test, not by inspection.
+for _stream in (_sys.stdout, _sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 import re
 import subprocess
@@ -69,19 +75,19 @@ def _all_patterns(config: dict) -> list[tuple[str, re.Pattern]]:
     return patterns
 
 
-def _tracked_files() -> list[Path]:
+def _tracked_files(repo: Path) -> list[Path]:
     try:
         out = subprocess.run(
-            ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
         ).stdout
-        return [REPO / line for line in out.splitlines() if line.strip()]
+        return [repo / line for line in out.splitlines() if line.strip()]
     except (subprocess.CalledProcessError, FileNotFoundError):
         # Not a git repo (or git unavailable) — fall back to a plain walk, same skip-list
         # convention as boundary_contract.py.
         skip_dirs = {".git", "venv", "__pycache__", "node_modules", "target"}
         return [
-            p for p in REPO.rglob("*")
-            if p.is_file() and not any(part in skip_dirs for part in p.relative_to(REPO).parts)
+            p for p in repo.rglob("*")
+            if p.is_file() and not any(part in skip_dirs for part in p.relative_to(repo).parts)
         ]
 
 
@@ -106,14 +112,14 @@ def scan_file(path: Path, patterns: list[tuple[str, re.Pattern]]) -> list[str]:
     return errors
 
 
-def check(config: dict) -> list[str]:
+def check(config: dict, repo: Path = REPO) -> list[str]:
     allowlist = get(config, "secrets_scan.allowlist_paths", []) or [".env.example"]
     patterns = _all_patterns(config)
     errors: list[str] = []
-    for f in _tracked_files():
+    for f in _tracked_files(repo):
         if not f.is_file():
             continue
-        rel = f.relative_to(REPO)
+        rel = f.relative_to(repo)
         if _is_allowlisted(rel, allowlist):
             continue
         for e in scan_file(f, patterns):

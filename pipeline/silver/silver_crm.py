@@ -32,6 +32,7 @@ from pyspark.sql.functions import col, lit
 from pyspark.sql.types import StringType
 
 from pipeline.common.lake_paths import layer_path
+from pipeline.common.money import to_money
 from pipeline.silver.birth_number_decode import InvalidBirthNumber, decode_birth_number
 from pipeline.silver.common import mask_last4, merge_upsert
 
@@ -147,8 +148,16 @@ def build_sil_trans(spark: SparkSession) -> None:
             col("trans_date__c").alias("date"),
             col("trans_type__c").alias("type"),
             col("operation__c").alias("operation"),
-            col("amount__c").cast("double").alias("amount"),
-            col("balance__c").cast("double").alias("balance"),
+            # MONEY, not double (2026-09-04, INC-0004 completion). journey/05_STTM.md has
+            # always declared `sil_trans.amount / sil_trans.balance` as **decimal**; the
+            # `.cast("double")` here was a live violation of that locked contract, same class
+            # as the `is_fraud` BIGINT-vs-boolean gap fixed in silver_fraud.py. Casting the
+            # Salesforce value straight to DECIMAL(18,2) — never via double — keeps the
+            # representation exact from the source onward. Gold's own cast could only ROUND a
+            # double back to 2dp, which recovers ordinary amounts but not large ones, and
+            # recovery is not correctness.
+            to_money("amount__c").alias("amount"),
+            to_money("balance__c").alias("balance"),
             col("k_symbol__c").alias("k_symbol"),
             col("bank__c").alias("bank"),
             col("partner_account__c").alias("partner_account"),
